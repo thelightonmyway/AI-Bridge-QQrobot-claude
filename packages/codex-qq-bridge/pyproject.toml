@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=64.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codex-qq-bridge"
+version = "1.0.0"
+description = "Codex QQ Bridge - Connect OpenAI Codex CLI to QQ instant messaging"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+dependencies = [
+    "aiohttp",
+    "httpx",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["codex_qq_bridge*"]
+
+[project.scripts]
+codex-qq-bridge = "codex_qq_bridge.bridge:cli"

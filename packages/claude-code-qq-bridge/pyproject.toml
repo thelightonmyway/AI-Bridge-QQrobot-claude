@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=64.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-code-qq-bridge"
+version = "3.0.0"
+description = "Claude Code QQ Bridge - Connect Claude Code CLI to QQ instant messaging"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+dependencies = [
+    "aiohttp",
+    "httpx",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["claude_code_qq_bridge*"]
+
+[project.scripts]
+claude-code-qq-bridge = "claude_code_qq_bridge.bridge:cli"

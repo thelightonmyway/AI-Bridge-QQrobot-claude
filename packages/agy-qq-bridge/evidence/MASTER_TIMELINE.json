@@ -1,0 +1,50 @@
+{
+  "meta": {
+    "title": "AGY-QQ Bridge Master Timeline",
+    "generated": "2026-06-27T11:30:00Z",
+    "sources": ["event_ledger_v1", "transcript.jsonl", "bridge.log", "git log", "session_search"]
+  },
+  "INPUT_EVENTS": [
+    {"timestamp": "2026-06-26T15:32:33", "source": "qq", "event_type": "msg_received", "version": "v1", "content": "首个QQ消息经桥到达AGY", "confidence": "high"},
+    {"timestamp": "2026-06-26T15:34:56", "source": "qq", "event_type": "msg_forwarded", "version": "v1", "content": "桥成功转发消息到 tmux AGY", "confidence": "high"},
+    {"timestamp": "2026-06-26T17:11:37", "source": "qq", "event_type": "msg_received", "version": "v4.x", "content": "用户发'听到了没有'", "confidence": "high"},
+    {"timestamp": "2026-06-26~18:00", "source": "system", "event_type": "msg_piped", "version": "v5.0", "content": "tmux pipe-pane启用，AGY输出重定向到文件", "confidence": "high"},
+    {"timestamp": "2026-06-27T09:26:34", "source": "qq", "event_type": "msg_received", "version": "v8.0", "content": "用户发审批测试指令", "confidence": "high"},
+    {"timestamp": "2026-06-27T09:26:49", "source": "qq", "event_type": "approval_decision", "version": "v8.0", "content": "用户点击allow按钮", "confidence": "high"}
+  ],
+  "EXECUTION_EVENTS": [
+    {"timestamp": "2026-06-16", "source": "code", "event_type": "init", "version": "v0", "content": "项目初始化", "confidence": "high", "commit": "34b456f"},
+    {"timestamp": "2026-06-26T15:29:46", "source": "bridge", "event_type": "ws_connected", "version": "v1", "content": "桥首次成功WS READY", "confidence": "high"},
+    {"timestamp": "2026-06-26T15:29:46", "source": "bridge", "event_type": "bot_online", "version": "v1", "content": "bot_openid=15319041289707606080", "confidence": "high"},
+    {"timestamp": "2026-06-26T15:35:02", "source": "agy", "event_type": "first_reply", "version": "v1", "content": "AGY首次回复含CLI启动横幅", "confidence": "high"},
+    {"timestamp": "2026-06-26~16:00", "source": "code", "event_type": "scheme_change", "version": "v4.1", "content": "is_permission_prompt改为英文TUI特征匹配", "confidence": "high"},
+    {"timestamp": "2026-06-26~16:30", "source": "code", "event_type": "scheme_change", "version": "v4.2", "content": "引入水位线watermark+行号diff", "confidence": "high"},
+    {"timestamp": "2026-06-26~17:30", "source": "code", "event_type": "scheme_change", "version": "v5.0", "content": "放弃capture-pane水位线，改tmux pipe-pane文件读取", "confidence": "high", "commit": "08bad43"},
+    {"timestamp": "2026-06-26~20:00", "source": "code", "event_type": "scheme_change", "version": "v6.0", "content": "pipe-pane + drain协程 + 分隔线截断", "confidence": "high"},
+    {"timestamp": "2026-06-26~23:00", "source": "code", "event_type": "scheme_change", "version": "v7.0", "content": "reader协程 + asyncio.Queue", "confidence": "high"},
+    {"timestamp": "2026-06-27~09:00", "source": "code", "event_type": "scheme_change", "version": "v8.0", "content": "转用transcript.jsonl结构化提取（架构转折点）", "confidence": "high", "commit": "6f8e182"},
+    {"timestamp": "2026-06-27~10:10", "source": "code", "event_type": "fix", "version": "v8.1", "content": "修改1: APPROVAL_REQUIRED固定提示", "confidence": "high"},
+    {"timestamp": "2026-06-27~10:15", "source": "code", "event_type": "fix", "version": "v8.1", "content": "修改2: TUI轮询前transcript预检", "confidence": "high"},
+    {"timestamp": "2026-06-27~10:50", "source": "code", "event_type": "fix", "version": "v8.2", "content": "修改3: is_permission_prompt末尾10行", "confidence": "high"},
+    {"timestamp": "2026-06-27~10:56", "source": "bridge", "event_type": "restart", "version": "v8.2", "content": "桥接重启成功，PID 4046885", "confidence": "high"}
+  ],
+  "OUTPUT_EVENTS": [
+    {"timestamp": "2026-06-26T15:35:02", "source": "bridge", "event_type": "reply_to_qq", "version": "v1", "content": "AGY回复含启动横幅发送至QQ", "confidence": "high"},
+    {"timestamp": "2026-06-26T17:08", "source": "bridge", "event_type": "token_refresh", "version": "v1", "content": "首次token刷新成功", "confidence": "high"},
+    {"timestamp": "2026-06-26T17:11:05", "source": "bridge", "event_type": "approval_key_generated", "version": "v4.x", "content": "AGY回复含审批讨论导致approval key生成(2f4a1902)", "confidence": "high"},
+    {"timestamp": "2026-06-26T17:11:45", "source": "bridge", "event_type": "approval_key_generated", "version": "v4.x", "content": "假阳性approval key(c30f6687)生成", "confidence": "high"},
+    {"timestamp": "2026-06-27T09:26:41", "source": "bridge", "event_type": "approval_key_generated", "version": "v8.0", "content": "正常审批approval key(c0fdf001)生成", "confidence": "high"},
+    {"timestamp": "2026-06-27T09:59:46", "source": "bridge", "event_type": "approval_key_generated", "version": "v8.0", "content": "假阳性审批key(55b89cff)生成", "confidence": "high"},
+    {"timestamp": "2026-06-27T10:00:02", "source": "bridge", "event_type": "approval_denied", "version": "v8.0", "content": "用户deny假阳性审批", "confidence": "high"},
+    {"timestamp": "2026-06-27T10:56:02", "source": "bridge", "event_type": "ws_connected", "version": "v8.2", "content": "修复后桥READY, session_id=5177ae6d", "confidence": "high"}
+  ],
+  "FAILURE_EVENTS": [
+    {"timestamp": "2026-06-26T15:19:24", "source": "bridge", "event_type": "ERROR_token_url", "version": "v1", "content": "404 Not Found — 旧API端点", "frequency": "once"},
+    {"timestamp": "2026-06-26~15:35", "source": "bridge", "event_type": "BUG_banner_leak", "version": "v1", "content": "capture-pane全屏内容当回复发出", "frequency": "persistent v1-v4"},
+    {"timestamp": "2026-06-26~16:00", "source": "bridge", "event_type": "BUG_false_positive_cn_keywords", "version": "v4.x", "content": "AGY含'权限''审批'的回复触发审批误判", "frequency": "multiple per session"},
+    {"timestamp": "2026-06-26~18:00", "source": "bridge", "event_type": "BUG_pipe_pane_control_chars", "version": "v5.x", "content": "pipe-pane读取含控制字符和AGY重绘", "frequency": "persistent v5"},
+    {"timestamp": "2026-06-26~22:00", "source": "bridge", "event_type": "BUG_delimiter_length", "version": "v6.x", "content": "分隔线长度不定导致截断不准", "frequency": "persistent v6"},
+    {"timestamp": "2026-06-27~09:26", "source": "bridge", "event_type": "BUG_tui_stale_false_positive", "version": "v8.0", "content": "AGY自动批准后TUI残留导致假阳性", "frequency": "persistent v7-v8"},
+    {"timestamp": "2026-06-27~09:59", "source": "bridge", "event_type": "BUG_agy_reply_approval_keywords", "version": "v8.0", "content": "AGY回复含'自动放行与假阳性'触发误判", "frequency": "fixed v8.2"}
+  ]
+}

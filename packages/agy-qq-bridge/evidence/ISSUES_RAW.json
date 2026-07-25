@@ -1,0 +1,79 @@
+{
+  "meta": {
+    "title": "AGY-QQ Bridge Issues (Raw Facts)",
+    "generated": "2026-06-27T11:30:00Z",
+    "rule": "No root cause, no solution, no analysis. Only symptom + trigger + behavior + frequency."
+  },
+  "issues": [
+    {
+      "issue_id": "ISSUE-001",
+      "symptom": "QQ收到完整CLI启动横幅作为回复",
+      "trigger_event": "bridge调用capture-pane获取AGY输出",
+      "observed_behavior": "capture-pane返回整个session内容，含CLI启动logo、版本号、账户信息",
+      "frequency": "persistent across v1-v4"
+    },
+    {
+      "issue_id": "ISSUE-002",
+      "symptom": "QQ收到AGY历史回复被拼接在当次回复中",
+      "trigger_event": "capture-pane读取后未过滤历史行",
+      "observed_behavior": "用户单次发送一条消息，收到包含过去3-5轮对话的全部内容",
+      "frequency": "persistent across v1-v4"
+    },
+    {
+      "issue_id": "ISSUE-003",
+      "symptom": "AGY正常回复被判定为审批面板，QQ上出现审批按钮卡片",
+      "trigger_event": "AGY回复文本中包含中文'权限''审批''允许'等词汇",
+      "observed_behavior": "is_permission_prompt()返回True，send_message_rest()添加approval_key和按钮",
+      "frequency": "multiple per session, across v4.x"
+    },
+    {
+      "issue_id": "ISSUE-004",
+      "symptom": "AGY回复文本中出现除审批关键词外的中文误匹配",
+      "trigger_event": "AGY在thinking或content中描述审批流程或讨论权限问题",
+      "observed_behavior": "桥生成approval key并在QQ上推送审批按钮",
+      "frequency": "multiple per session"
+    },
+    {
+      "issue_id": "ISSUE-005",
+      "symptom": "pipe-pane读取的AGY输出含控制字符导致JSON解析失败",
+      "trigger_event": "tmux pipe-pane重定向AGY输出到文件",
+      "observed_behavior": "文件内容含ANSI转义码、换码序列、scrollback重绘标记",
+      "frequency": "persistent across v5"
+    },
+    {
+      "issue_id": "ISSUE-006",
+      "symptom": "pipe-pane增量读取丢失部分AGY回复内容",
+      "trigger_event": "AGY重绘终端scrollback导致文件写入位置偏移",
+      "observed_behavior": "桥读取的增量内容与AGY实际输出不一致，部分回复被截断或重复",
+      "frequency": "intermittent across v5-v6"
+    },
+    {
+      "issue_id": "ISSUE-007",
+      "symptom": "分隔线截断位置不准确导致消息被吞",
+      "trigger_event": "AGY输出中的分隔线（──────────）长度不定",
+      "observed_behavior": "桥用固定分隔线模式截断时，短分隔线不被识别导致截断失败，长分隔线截断过多",
+      "frequency": "persistent across v6"
+    },
+    {
+      "issue_id": "ISSUE-008",
+      "symptom": "审批按钮已发出但AGY实际已在后台自动批准执行",
+      "trigger_event": "AGY沙箱自动批准危险操作（trusted environment）",
+      "observed_behavior": "capture-pane在AGY自动批准的瞬间抓到审批TUI文本，桥误判后发审批按钮，用户点拒绝时命令已执行完毕",
+      "frequency": "persistent across v7-v8.0"
+    },
+    {
+      "issue_id": "ISSUE-009",
+      "symptom": "AGY回复中讨论'审批''假阳性'触发审批按钮",
+      "trigger_event": "AGY回复文本中包含'Requesting permission for:'或'Do you want to proceed?'等英文审批特征字符串",
+      "observed_behavior": "is_permission_prompt()对全屏文本匹配，AGY的历史回复在capture-pane底部可见",
+      "frequency": "fixed in v8.2 (末尾10行限制)"
+    },
+    {
+      "issue_id": "ISSUE-010",
+      "symptom": "AGY transcript.jsonl中不存在审批中间状态",
+      "trigger_event": "所有PLANNER_RESPONSE条目status=DONE",
+      "observed_behavior": "transcript不记录PENDING/WAITING/APPROVAL状态。无'execution gap'",
+      "frequency": "confirmed: architecture limitation"
+    }
+  ]
+}
