@@ -11,13 +11,13 @@ import os, re, time, json, sys
 from pathlib import Path
 
 # Claude Code 真实会话日志目录（JSONL 格式）
-CLAUDE_LOGS = Path("/root/.claude/projects/-root/")
-OUTPUT = Path("/root/.claude/shell-snapshots/conversation.log")
+CLAUDE_LOGS = Path("/home/xuyang/.claude/projects/-home-xuyang/")
+OUTPUT = Path("/home/xuyang/.claude/shell-snapshots/conversation.log")
 MAX_SIZE = 15 * 1024  # 15KB 自动循环
 CHECK_INTERVAL = 10   # 轮询间隔（秒）
 
 # 保存偏移量的文件，重启后避免重读全部历史
-OFFSET_FILE = Path("/root/.claude/shell-snapshots/monitor-offsets.json")
+OFFSET_FILE = Path("/home/xuyang/.claude/shell-snapshots/monitor-offsets.json")
 
 
 def log(msg: str):

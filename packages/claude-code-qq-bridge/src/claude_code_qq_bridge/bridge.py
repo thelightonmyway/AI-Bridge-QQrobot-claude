@@ -21,6 +21,9 @@ Principles:
 import asyncio
 import json
 import os
+import re
+import signal
+import subprocess
 import sys
 import time
 import uuid
@@ -34,22 +37,26 @@ def load_env():
     candidates = [
         Path(".env"),
         Path(__file__).parent / ".env",
-        Path("/root/claude-code-qq-bridge/.env"),
+        Path.home() / "agent-keep" / ".env",
     ]
     for p in candidates:
-        if p.exists():
-            try:
-                with open(p, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
-                        if not line or line.startswith("#") or "=" not in line:
-                            continue
-                        key, val = line.split("=", 1)
-                        # Direct assignment to ensure .env overrides inherited env vars
-                        os.environ[key.strip()] = val.strip().strip('"').strip("'")
-                break
-            except Exception:
-                pass
+        try:
+            if not p.exists():
+                continue
+        except PermissionError:
+            continue
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    key, val = line.split("=", 1)
+                    # Direct assignment to ensure .env overrides inherited env vars
+                    os.environ[key.strip()] = val.strip().strip('"').strip("'")
+            break
+        except Exception:
+            pass
 
 load_env()
 
@@ -62,7 +69,109 @@ CLIENT_SECRET = os.environ.get("CLIENT_SECRET", "")
 MASTER_OPENID = os.environ.get("MASTER_OPENID", "")
 TMUX_SESSION = os.environ.get("TMUX_SESSION", "1")
 CLAUDE_HOME = str(Path.home() / ".claude")
-CLAUDE_PROJECT = "-root"
+CLAUDE_PROJECT = "-home-xuyang"
+
+
+def path_to_claude_project(path: str) -> str:
+    """将文件系统路径转为 Claude Code 项目名。例如 /home/xuyang → -home-xuyang"""
+    abspath = str(Path(path).resolve())
+    return "-" + abspath.lstrip("/").replace("/", "-")
+
+
+# === ANSI 控制字符清理 ===
+_ANSI_RE = re.compile(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[@-_].|\x1b\[[0-9;]*m')
+def strip_ansi(text: str) -> str:
+    return _ANSI_RE.sub('', text)
+
+
+# === 从 capture-pane 输出中提取 BTW 面板中的纯净答案 ===
+_BTW_NOISE = re.compile(
+    r'^[│╭╰├└┤┐┘╮╯─━]*\s*$|'           # 纯框线字符
+    r'Esc to close|'                      # 关闭提示
+    r'^\s*>?\s*/btw\b|'                   # /btw 命令行
+    r'^\s*>?\s*/by-the-way\b|'            # /by-the-way 命令行
+    r'💬\s*BTW|'                          # BTW 标题
+    r'Answering[…\\.]*|'                   # 加载状态
+    r'^\s*claude\s*[>❯]|'                # claude prompt
+    r'^\s*$'                              # 空行
+)
+
+def _extract_btw_answer(captured: str) -> str:
+    """从已去 ANSI 的 capture-pane 文本中提取 BTW 面板内的纯净答案。"""
+    lines = captured.split("\n")
+    # 定位 BTW 面板：找到包含 "💬 BTW" 或 "/btw" 的行
+    panel_start = -1
+    for i, line in enumerate(lines):
+        if "💬" in line and "BTW" in line:
+            panel_start = i
+            break
+    if panel_start < 0:
+        for i, line in enumerate(lines):
+            if "/btw" in line.lower():
+                panel_start = i
+                break
+    if panel_start < 0:
+        return ""
+
+    # 收集面板内容直到终端 prompt 或面板结束
+    result = []
+    for i in range(panel_start + 1, len(lines)):
+        line = lines[i].strip()
+        # 过滤噪音行
+        if _BTW_NOISE.match(line):
+            continue
+        # 遇到 claude prompt 或 > 开头的命令 → 面板结束
+        if re.match(r'^\s*(claude\s*[>❯]|\S*>\s)', line):
+            break
+        result.append(line)
+
+    # 过滤掉和原问题相同的行（面板里可能显示的问题文本较短）
+    # 合并为文本
+    text = "\n".join(result).strip()
+    # 去除可能的重复标题和状态文本
+    text = re.sub(r'💬\s*BTW\s*[/\w]*\s*', '', text)
+    text = re.sub(r'Answering[…\\.]*', '', text)
+    return text.strip()
+
+
+# === 快速抓取（不等待稳定，用于轮询） ===
+async def _capture_pane() -> str:
+    """Capture tmux pane once, strip ANSI, return text."""
+    proc = await asyncio.create_subprocess_exec(
+        "tmux", "capture-pane", "-t", f"{TMUX_SESSION}:", "-p",
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, _ = await proc.communicate()
+    return strip_ansi(stdout.decode("utf-8", errors="replace"))
+
+
+# === tmux 命令锁，防止并发操作 ===
+_cmd_lock = asyncio.Lock()
+
+
+# === capture-pane 稳定版：等待输出不动后再抓取 ===
+async def capture_pane_stable(timeout: float = 15.0, settle: float = 0.6) -> str:
+    """Capture tmux pane, wait for output to stabilize, strip ANSI. Returns cleaned text."""
+    deadline = time.time() + timeout
+    prev_hash = None
+    prev_text = ""
+    while time.time() < deadline:
+        proc = await asyncio.create_subprocess_exec(
+            "tmux", "capture-pane", "-t", f"{TMUX_SESSION}:", "-p",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await proc.communicate()
+        cur = stdout.decode("utf-8", errors="replace")
+        cur_hash = hash(cur)
+        if prev_hash is not None and cur_hash == prev_hash:
+            return strip_ansi(cur)
+        prev_text = cur
+        prev_hash = cur_hash
+        await asyncio.sleep(settle)
+    logger.warning("[Capture] Timeout, returning last frame")
+    return strip_ansi(prev_text) if prev_text else ""
+
+
 API_BASE = "https://api.sgroup.qq.com"
 TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken"
 GATEWAY_URL_PATH = "/gateway"
@@ -70,24 +179,40 @@ CONNECT_TIMEOUT = 20
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
 HEARTBEAT_INTERVAL = 15.0
 
-LOG_DIR = Path("logs")
-LOG_DIR.mkdir(exist_ok=True)
+# === 日志：固定到 ~/agent-keep/logs/bridge.log（绝对路径，与启动 CWD/重定向无关）===
+# 只使用 FileHandler：避免 stdout 重定向与文件重复写两份、以及
+# "程序以为写在 bridge.log，实际却跑到 nohup.out" 的混乱。
+# stdout/stderr 由 start.sh 一并重定向到 bridge.log，兜底捕获未走 logging 的
+# print / traceback；所有结构化日志则统一进 bridge.log。
+LOG_DIR = Path(os.environ.get("BRIDGE_LOG_DIR", str(Path.home() / "agent-keep" / "logs")))
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+BRIDGE_LOG_FILE = LOG_DIR / "bridge.log"
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler(str(LOG_DIR / "claude-code-qq-bridge.log"), encoding="utf-8"),
-        logging.StreamHandler(sys.stdout),
-    ],
+    handlers=[logging.FileHandler(str(BRIDGE_LOG_FILE), encoding="utf-8")],
 )
 logger = logging.getLogger("claude_code_bridge")
+logger.info(f"[log] Bridge log file: {BRIDGE_LOG_FILE}")
+
+
+def _log_uncaught(exc_type, exc, tb):
+    """把未被 except 捕获的异常也写进 bridge.log。"""
+    import traceback as _tb
+    logger.error("Uncaught exception:\n" + "".join(_tb.format_exception(exc_type, exc, tb)))
+
+
+sys.excepthook = _log_uncaught
 
 # === State: single session保活 ===
-_session_id: Optional[str] = None
+_session_id: Optional[str] = None       # QQ WebSocket session_id (for resume)
+_claude_session_id: Optional[str] = None  # Claude Code session UUID
 _log_path: Optional[str] = None
 _pid: Optional[int] = None
 _session_file: Optional[Path] = None
 _jsonl_watermark: int = 0
+_current_cwd: str = "/home/xuyang"       # dynamically updated by /cd, /resume, refresh
+_current_project: str = "-home-xuyang"    # derived from _current_cwd; used by /resume listing
 
 _access_token: Optional[str] = None
 _token_expires_at: float = 0.0
@@ -101,63 +226,633 @@ _is_generating = False  # 是否处于等待 AI 响应的生成状态
 _generating_since = 0.0  # 进入生成状态的时间，超时自动 reset
 _bot_openid: str = ""
 
+# === State: /resume 编号 → 会话信息映射 ===
+# 每个会话保存: id(session_id), jsonl_path, cwd(target_cwd), project(target_project)
+_resume_mapping: Dict[int, dict] = {}
+
+# === State: permission mode 状态机（bridge tracking）===
+# Claude Code Shift+Tab 循环顺序: Auto → Accept edits → Plan → Manual → Auto
+_MODE_CYCLE = ["Auto", "Accept edits", "Plan", "Manual"]
+_tracked_mode: str = "Auto"  # 初始值：启动命令 --permission-mode auto
+
+
+def _try_read_mode_from_session() -> Optional[str]:
+    """尝试从 Claude Code session 文件读取 permissionMode。若无则返回 None。"""
+    if not _session_file or not _session_file.exists():
+        return None
+    try:
+        with open(_session_file) as f:
+            data = json.load(f)
+        return data.get("permissionMode")  # 未来版本可能有此字段
+    except Exception:
+        return None
+
+
+# === State: 会话状态持久化 + 自动恢复限流 ===
+_STATE_FILE = Path.home() / ".config" / "claude-code-qq-bridge" / "state.json"
+_last_recovery_attempt = 0.0
+_RECOVERY_COOLDOWN = 20.0
+
+
+# === 进程/会话辅助：所有操作都限定在 bridge 自己的 tmux pane 内 ===
+def _is_alive(pid) -> bool:
+    """进程是否存在（kill(pid, 0) 探测）。"""
+    try:
+        os.kill(int(pid), 0)
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def _read_cmdline(pid) -> str:
+    try:
+        with open(f"/proc/{pid}/cmdline", "rb") as f:
+            return f.read().replace(b"\0", b" ").decode("utf-8", "replace").strip()
+    except Exception:
+        return ""
+
+
+def _is_claude_process(pid) -> bool:
+    """PID 对应进程是否确实是 Claude CLI（排除 bridge 自身）。
+
+    只认 argv[0] 为 claude 的进程。script 包装进程的 cmdline 里虽然含
+    "claude"（-c 'claude ...'），但它的进程名是 script，不是真正的 claude，
+    不能计入 _pane_claude_pids，否则 _stop_pane_claude 会误杀包装进程。
+    """
+    cmd = _read_cmdline(pid)
+    if not cmd:
+        return False
+    if "claude-code-qq-bridge" in cmd or "claude_code_qq_bridge" in cmd:
+        return False
+    name = cmd.split()[0].rsplit("/", 1)[-1]
+    if name.startswith("claude"):
+        return True
+    # 兼容 npx/node 等启动方式：cmdline 含 claude，但必须排除包装进程
+    return "claude" in cmd and name not in ("script", "sh", "bash", "zsh", "dash", "npm", "npx", "node")
+
+
+def _tmux_pane_pids(depth: int = 4) -> set:
+    """返回 bridge 自己 tmux pane 的完整进程树 PID 集合。
+    先取 #{pane_pid}，再逐层取后代，避免只看到 pane 直接 PID 而漏掉
+    script 包装下更深层的 claude 进程。"""
+    pids: set = set()
+    try:
+        r = subprocess.run(
+            ["tmux", "list-panes", "-t", f"{TMUX_SESSION}:", "-F", "#{pane_pid}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        for tok in r.stdout.split():
+            tok = tok.strip()
+            if tok.lstrip("-").isdigit():
+                pids.add(int(tok))
+        for _ in range(depth):
+            for ppid in list(pids):
+                try:
+                    r = subprocess.run(
+                        ["ps", "--ppid", str(ppid), "-o", "pid="],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                except Exception:
+                    continue
+                for tok in r.stdout.split():
+                    tok = tok.strip()
+                    if tok.isdigit():
+                        pids.add(int(tok))
+    except Exception as e:
+        logger.warning(f"[pane] tmux/ps error: {e}")
+    return pids
+
+
+def _pane_claude_pids() -> list:
+    """当前 pane 进程树中存活且确认为 claude 的 PID 列表。"""
+    pane = _tmux_pane_pids()
+    return sorted(p for p in pane if p > 0 and _is_alive(p) and _is_claude_process(p))
+
+
+def _pane_has_claude() -> bool:
+    return bool(_pane_claude_pids())
+
+
+def _session_file_for_pid(pid) -> Optional[Path]:
+    sf = Path(CLAUDE_HOME) / "sessions" / f"{pid}.json"
+    return sf if sf.exists() else None
+
+
+def _session_data_for_pid(pid) -> Optional[dict]:
+    sf = _session_file_for_pid(pid)
+    if not sf:
+        return None
+    try:
+        with open(sf) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return None
+
+
+def _find_pane_claude_by_session(sid: str) -> Optional[int]:
+    """在 bridge 自己的 pane 中，找 sessionId==sid 且存活的 claude PID。"""
+    for pid in _pane_claude_pids():
+        data = _session_data_for_pid(pid)
+        if data and data.get("sessionId") == sid:
+            return pid
+    return None
+
+
+def _apply_binding(sid: Optional[str], pid: Optional[int], log_path: Optional[str]):
+    """把 Bridge 绑定到 (sid, pid, jsonl)，并更新 project/cwd/watermark/state。"""
+    global _claude_session_id, _log_path, _pid, _session_file, _jsonl_watermark
+    global CLAUDE_PROJECT, _current_project, _current_cwd
+    _claude_session_id = sid
+    _pid = pid
+    _log_path = log_path
+    _session_file = Path(CLAUDE_HOME) / "sessions" / f"{pid}.json" if pid else None
+    if log_path:
+        _jsonl_watermark = _count_jsonl_lines(log_path)
+        actual_project = Path(log_path).parent.name
+        if actual_project != CLAUDE_PROJECT:
+            logger.info(f"[bind] CLAUDE_PROJECT: {CLAUDE_PROJECT} -> {actual_project}")
+            CLAUDE_PROJECT = actual_project
+        if actual_project != _current_project:
+            logger.info(f"[bind] _current_project: {_current_project} -> {actual_project}")
+            _current_project = actual_project
+    if pid:
+        data = _session_data_for_pid(pid)
+        if data and data.get("cwd"):
+            _current_cwd = data["cwd"]
+    logger.info(
+        f"[bind] sid={sid}, pid={pid}, jsonl={log_path}, "
+        f"project={CLAUDE_PROJECT}, cwd={_current_cwd}, watermark={_jsonl_watermark}"
+    )
+    _save_state()
+
+
+def _save_state():
+    """持久化最近会话，供 Bridge 重启后自动恢复。"""
+    try:
+        _STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(_STATE_FILE, "w", encoding="utf-8") as f:
+            json.dump({"last_session_id": _claude_session_id, "cwd": _current_cwd}, f)
+    except Exception as e:
+        logger.warning(f"[state] save failed: {e}")
+
+
+def _load_state() -> dict:
+    try:
+        with open(_STATE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+# === 停止 / 启动 / 等待绑定（均为 pane 作用域） ===
+async def _interrupt_claude_in_tmux():
+    """发送一次 Ctrl+C 中断当前任务，尽量保留 Claude 进程不退出。"""
+    proc = await asyncio.create_subprocess_exec(
+        "tmux", "send-keys", "-t", f"{TMUX_SESSION}:", "C-c", ""
+    )
+    await proc.communicate()
+    await asyncio.sleep(0.5)
+
+
+async def _ensure_pane_at_shell(timeout: float = 10.0) -> bool:
+    """等待 pane 内不再有 claude 进程（回到 bash）。
+    超时则仅向 pane 内残留的 claude PID 发 SIGTERM（绝不全局 kill）。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not _pane_claude_pids():
+            return True
+        await asyncio.sleep(1.0)
+    for pid in _pane_claude_pids():
+        logger.warning(f"[stop] force-killing stale pane claude pid={pid}")
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except OSError:
+            pass
+    await asyncio.sleep(1)
+    return not _pane_claude_pids()
+
+
+async def _stop_pane_claude():
+    """彻底停止 bridge 自己 pane 内的 Claude（C-c 序列 + 兜底 SIGTERM）。
+
+    C-c 在 claude 的提示符下只会中断任务而不会退出，所以这里短等 3 秒后
+    必然走 SIGTERM 兜底（仅对本 pane 内的 claude PID，绝不全局 kill）。"""
+    for key in ["C-c", "Enter", "C-c"]:
+        proc = await asyncio.create_subprocess_exec(
+            "tmux", "send-keys", "-t", f"{TMUX_SESSION}:", key, ""
+        )
+        await proc.communicate()
+        await asyncio.sleep(0.3)
+    await _ensure_pane_at_shell(timeout=3)
+
+
+async def _send_tmux_keys(keys: list, gap: float = 0.3):
+    """向 bridge 自己的 tmux pane 依次发送按键。"""
+    for key in keys:
+        proc = await asyncio.create_subprocess_exec(
+            "tmux", "send-keys", "-t", f"{TMUX_SESSION}:", key, ""
+        )
+        await proc.communicate()
+        await asyncio.sleep(gap)
+
+
+def _is_workspace_trust_prompt(text: str) -> bool:
+    """Claude 的 workspace trust prompt（选项 1 默认选中，按 Enter 确认）：
+    'Accessing workspace:' + '❯ 1. Yes, I trust this folder' + 'Enter to confirm'。"""
+    return (
+        ("accessing workspace" in text or "i trust this folder" in text)
+        and ("i trust this folder" in text or "enter to confirm" in text)
+    )
+
+
+def _is_legacy_trust_prompt(text: str) -> bool:
+    """旧式 trust prompt：'trust'/'信任' + '?'/'y/n'/'yes/no'。"""
+    return ("trust" in text or "信任" in text) and (
+        "?" in text or "y/n" in text or "yes/no" in text
+    )
+
+
+async def _accept_trust_prompt_if_present(checks: int = 8, interval: float = 1.0) -> bool:
+    """若出现 Claude 信任提示则自动确认，无提示则跳过（避免把按键打进输入框）。
+
+    - workspace 提示（'Accessing workspace' + 'Yes, I trust this folder' + 'Enter to confirm'）：
+      选项 1 已默认选中 → 发送 Enter 确认。
+    - 旧式提示（'?'/'y/n'）：发送 '1' + Enter。
+    返回是否确实发送了确认键。"""
+    for _ in range(checks):
+        try:
+            captured = (await _capture_pane()).lower()
+            if _is_workspace_trust_prompt(captured):
+                await _send_tmux_keys(["Enter"])
+                logger.info("[launch] workspace trust prompt accepted (Enter)")
+                return True
+            if _is_legacy_trust_prompt(captured):
+                await _send_tmux_keys(["1", "Enter"])
+                logger.info("[launch] legacy trust prompt accepted ('1' + Enter)")
+                return True
+        except Exception:
+            pass
+        await asyncio.sleep(interval)
+    return False
+
+
+async def _wait_for_resumed_binding(sid: str, timeout: float = 30.0) -> bool:
+    """轮询等待恢复会话的 claude PID 出现在 pane 并完成绑定。
+    - Claude 刚启动时 session 文件可能尚未生成，允许合理时间重试；
+    - 等待期间若出现 trust prompt（claude 停在 'Accessing workspace'），自动跨过，
+      而不是干等到超时误报启动失败。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        await _accept_trust_prompt_if_present(checks=1, interval=0.1)
+        pid = _find_pane_claude_by_session(sid)
+        log_path = find_jsonl_path(sid)
+        if pid and _is_alive(pid) and log_path:
+            _apply_binding(sid, pid, log_path)
+            return True
+        await asyncio.sleep(1.5)
+    # 最后再试一次
+    await _accept_trust_prompt_if_present(checks=1, interval=0.1)
+    pid = _find_pane_claude_by_session(sid)
+    log_path = find_jsonl_path(sid)
+    if pid and _is_alive(pid) and log_path:
+        _apply_binding(sid, pid, log_path)
+        return True
+    logger.error(f"[Resume] timeout: no live claude PID bound for session {sid}")
+    return False
+
+
+async def _wait_for_any_binding(timeout: float = 30.0) -> bool:
+    """全新启动：轮询直到 pane 中出现带 session 文件的 claude 并绑定。
+    等待期间同样自动跨过可能出现的 trust prompt。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        await _accept_trust_prompt_if_present(checks=1, interval=0.1)
+        sid, pid = find_current_session()
+        if sid and pid and _is_alive(pid):
+            _apply_binding(sid, pid, find_jsonl_path(sid))
+            return True
+        await asyncio.sleep(1.5)
+    logger.error("[launch] timeout: no claude bound in pane")
+    return False
+
+
+# === 死亡检测 + 自动恢复 ===
+# _recovery_in_progress + _recovery_event：并发调用者（poll 与 send_to_claude）
+# 在同一恢复窗口期撞车时，等待恢复完成而不是各自再触发一次 / 误报失败。
+_recovery_in_progress = False
+_recovery_event = asyncio.Event()
+
+
+async def _ensure_claude_alive() -> bool:
+    """发送前保证 pane 内有存活 Claude。
+
+    - 绑定 PID 存活且在 pane 内 → OK
+    - pane 内出现了新的 claude（如用户手动启动）→ 重新绑定
+    - pane 内无 claude → 尝试自动恢复（claude --resume 当前 sid）；限流，防抖；
+      若已有恢复在进行，等待它完成而非误报"自动恢复失败"
+    返回 True 表示可以安全向 Claude 发送输入。"""
+    global _pid, _claude_session_id, _last_recovery_attempt, _recovery_in_progress
+
+    if _pid and _is_alive(_pid) and _is_claude_process(_pid) and _pid in _tmux_pane_pids():
+        return True
+
+    # 0) 已有恢复在进行 → 等它完成，再复核存活
+    if _recovery_in_progress:
+        logger.info("[alive] recovery in progress — waiting for it to finish")
+        await _recovery_event.wait()
+        return _pid and _is_alive(_pid) and _is_claude_process(_pid) and _pid in _tmux_pane_pids()
+
+    # 1) pane 内有 claude，但绑定已失效 → 重新绑定
+    pane_claude = _pane_claude_pids()
+    if pane_claude:
+        # claude 可能正停在 workspace trust prompt（无 session 文件）→ 先跨过
+        await _accept_trust_prompt_if_present(checks=3, interval=1.0)
+        sid, pid = find_current_session()
+        if pid and sid:
+            logger.warning(
+                f"[alive] rebinding to pane claude pid={pid} sid={sid} "
+                f"(was pid={_pid} sid={_claude_session_id})"
+            )
+            _apply_binding(sid, pid, find_jsonl_path(sid))
+            return True
+        # 有 claude 进程但还没有 session 文件：先等一拍
+        logger.info("[alive] claude process present but session file not ready yet")
+        return False
+
+    # 2) pane 内无 claude → 自动恢复（限流，防抖）
+    now = time.time()
+    if now - _last_recovery_attempt < _RECOVERY_COOLDOWN:
+        logger.warning("[alive] auto-recovery rate-limited; claude still dead")
+        return False
+    _last_recovery_attempt = now
+
+    _recovery_in_progress = True
+    _recovery_event.clear()
+    try:
+        sid = _claude_session_id
+        cwd = _current_cwd
+        logger.info(f"[alive] pane has no claude — attempting auto-recovery (sid={sid}, cwd={cwd})")
+        ok, info = await restart_claude_in_tmux(cwd=cwd, resume_session_id=sid)
+        if ok:
+            logger.info("[alive] auto-recovery OK")
+            return True
+        logger.error(f"[alive] auto-recovery FAILED: {info}")
+        return False
+    finally:
+        _recovery_in_progress = False
+        _recovery_event.set()
+
+
+# === /resume: 扫描最近会话（增强版） ===
+def _format_size(bytes_val: int) -> str:
+    if bytes_val < 1024:
+        return f"{bytes_val}B"
+    elif bytes_val < 1024 * 1024:
+        return f"{bytes_val / 1024:.1f}KB"
+    else:
+        return f"{bytes_val / (1024 * 1024):.1f}MB"
+
+def _estimate_tokens_from_jsonl(jf: Path) -> str:
+    """从 JSONL 估算 token 用量。优先读取 usage 字段，否则统计文本量。"""
+    total_usage = 0
+    text_chars = 0
+    try:
+        with open(jf, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                # 优先用 usage 字段
+                usage = obj.get("usage")
+                if isinstance(usage, dict):
+                    total_usage += usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
+                # 同时统计 user/assistant 文本量作为后备
+                if obj.get("type") in ("user", "assistant"):
+                    msg = obj.get("message", {})
+                    content = msg.get("content", "")
+                    if isinstance(content, list):
+                        for block in content:
+                            if isinstance(block, dict) and block.get("type") == "text":
+                                text_chars += len(block.get("text", ""))
+                    elif isinstance(content, str):
+                        text_chars += len(content)
+    except Exception:
+        pass
+    if total_usage > 0:
+        if total_usage >= 1000:
+            return f"{total_usage / 1000:.0f}K tokens"
+        return f"{total_usage} tokens"
+    # 后备：粗略估算 (4 chars ≈ 1 token)
+    estimated = max(1, text_chars // 4)
+    if estimated >= 1000:
+        return f"~{estimated / 1000:.0f}K tokens (估)"
+    return f"~{estimated} tokens (估)"
+
+def extract_cwd_from_jsonl(jsonl_path: str) -> Optional[str]:
+    """从 JSONL 提取真实工作目录：返回第一条带 cwd 字段记录的值。
+    这是会话启动时的真实 cwd，是 /resume 的权威来源。"""
+    try:
+        with open(jsonl_path, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                cwd = obj.get("cwd")
+                if isinstance(cwd, str) and cwd:
+                    return cwd
+    except Exception:
+        pass
+    return None
+
+
+def project_name_to_cwd(project_name: str) -> Optional[str]:
+    """项目名反向推导 cwd（如 -mnt-e-Antarctic -> /mnt/e/Antarctic）。
+    仅当推导出的目录真实存在时返回，否则 None（只作 JSONL 不可用时的兜底）。"""
+    if not project_name.startswith("-"):
+        return None
+    candidate = "/" + project_name[1:].replace("-", "/")
+    return candidate if os.path.isdir(candidate) else None
+
+
+def list_recent_sessions(limit: int = 10) -> list:
+    """扫描 _current_project 目录，提取最近 N 个会话的摘要。
+    返回列表，每个元素: {id, time, title, mtime, size, tokens, is_current}"""
+    project_dir = Path(CLAUDE_HOME) / "projects" / _current_project
+    if not project_dir.exists():
+        return []
+    sessions = []
+    for jf in sorted(project_dir.glob("*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True):
+        sid = jf.stem
+        mtime = jf.stat().st_mtime
+        mtime_str = time.strftime("%m-%d %H:%M", time.localtime(mtime))
+        file_size = jf.stat().st_size
+        # 提取第一条用户消息作为标题
+        title = "(空会话)"
+        try:
+            with open(jf, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if obj.get("type") == "user":
+                        msg = obj.get("message", {})
+                        content = msg.get("content", "")
+                        if isinstance(content, list):
+                            texts = []
+                            for block in content:
+                                if isinstance(block, dict) and block.get("type") == "text":
+                                    t = block.get("text", "").strip()
+                                    if t:
+                                        texts.append(t)
+                            content = " ".join(texts)
+                        if isinstance(content, str) and content.strip():
+                            title = content.strip()[:80]
+                            break
+        except Exception:
+            pass
+        tokens_str = _estimate_tokens_from_jsonl(jf)
+        is_current = (sid == _claude_session_id) if _claude_session_id else False
+        sessions.append({
+            "id": sid,
+            "jsonl_path": str(jf),
+            "project": project_dir.name,
+            "cwd": extract_cwd_from_jsonl(str(jf)) or project_name_to_cwd(project_dir.name),
+            "time": mtime_str,
+            "title": title,
+            "mtime": mtime,
+            "size": _format_size(file_size),
+            "tokens": tokens_str,
+            "is_current": is_current,
+        })
+        if len(sessions) >= limit:
+            break
+    return sessions
+
+
+def find_jsonl_path(session_id: str) -> Optional[str]:
+    """Given a session_id, search all ~/.claude/projects/*/<session_id>.jsonl
+    to find the actual JSONL file on disk. Returns the path or None."""
+    projects_dir = Path(CLAUDE_HOME) / "projects"
+    if not projects_dir.exists():
+        return None
+    for project_dir in sorted(projects_dir.iterdir()):
+        if not project_dir.is_dir():
+            continue
+        candidate = project_dir / f"{session_id}.jsonl"
+        if candidate.exists():
+            logger.info(
+                f"[find_jsonl_path] session_id={session_id} -> {candidate} "
+                f"(project={project_dir.name})"
+            )
+            return str(candidate)
+    logger.warning(
+        f"[find_jsonl_path] session_id={session_id} NOT FOUND in any project "
+        f"under {projects_dir}"
+    )
+    return None
+
 
 def find_current_session():
-    """Find the current interactive session at startup or after restart."""
-    sessions_dir = Path(CLAUDE_HOME) / "sessions"
-    if not sessions_dir.exists():
-        return None, None, None
+    """在 bridge 自己的 tmux pane 内查找当前交互式 Claude 会话。
+
+    只考虑 pane 进程树里的 claude 进程（并核对 session 文件）。
+    绝不绑定 pane 外的 Claude（避免误接管/误操作用户其他终端里的会话）。
+
+    Returns (session_id, pid) or (None, None) on failure.
+    The JSONL path is resolved separately via find_jsonl_path()."""
+    pane_pids = _tmux_pane_pids()
+    logger.info(f"[find_session] tmux pane PIDs: {pane_pids}")
 
     best_sid = None
     best_pid = None
     best_updated = 0
 
-    for sf in sessions_dir.glob("*.json"):
-        try:
-            with open(sf) as f:
-                data = json.load(f)
-            pid = data.get("pid")
-            sid = data.get("sessionId")
-            kind = data.get("kind", "")
-            entrypoint = data.get("entrypoint", "")
-            if pid and sid and kind == "interactive" and entrypoint in ("cli", "sdk-ts"):
-                # Skip zombie: verify process is actually alive
-                try:
-                    os.kill(pid, 0)
-                except OSError:
-                    logger.debug(f"Skipping dead session: PID {pid} ({sf.name})")
-                    continue
-                updated = data.get("updatedAt", 0)
-                if updated > best_updated:
-                    best_updated = updated
-                    best_sid = sid
-                    best_pid = pid
-        except (json.JSONDecodeError, IOError):
+    for pid in sorted(pane_pids):
+        if pid <= 0 or not _is_alive(pid) or not _is_claude_process(pid):
             continue
+        data = _session_data_for_pid(pid)
+        if not data:
+            continue
+        if data.get("kind") != "interactive" or data.get("entrypoint") not in ("cli", "sdk-ts"):
+            continue
+        sid = data.get("sessionId")
+        if not sid:
+            continue
+        updated = data.get("updatedAt", 0)
+        if updated >= best_updated:
+            best_updated = updated
+            best_sid = sid
+            best_pid = pid
 
     if not best_sid:
-        return None, None, None
+        logger.warning("[find_session] No live interactive Claude Code session found in bridge pane")
+        return None, None
 
-    log_path = str(Path(CLAUDE_HOME) / "projects" / CLAUDE_PROJECT / f"{best_sid}.jsonl")
-    return best_sid, log_path, best_pid
+    logger.info(
+        f"[find_session] best: sid={best_sid}, pid={best_pid}, updated={best_updated}"
+    )
+    return best_sid, best_pid
 
 
-def refresh_session():
-    """Refresh session location after startup or restart."""
-    global _session_id, _log_path, _pid, _session_file, _jsonl_watermark
-    sid, log_path, pid = find_current_session()
-    if sid:
-        if _session_id is None or sid != _session_id:
-            # New session or first init → skip old JSONL, only push new messages
+def refresh_session(known_session_id: Optional[str] = None) -> bool:
+    """刷新 session 绑定。
+
+    - known_session_id 给定（如 /resume 后）：解析该会话 JSONL，并只在
+      bridge 自己的 pane 里找对应 claude PID。JSONL 或 PID 尚未就绪时返回
+      False（调用方 / resume 流程会轮询重试），绝不误报成功。
+    - 否则：只扫描 bridge 自己 pane 内的交互式 Claude 会话。
+    """
+    global _claude_session_id, _log_path, _pid, _session_file, _jsonl_watermark
+
+    if known_session_id:
+        log_path = find_jsonl_path(known_session_id)
+        if not log_path:
+            # JSONL 还没出现：保留 sid 待 JSONL 生成
+            _claude_session_id = known_session_id
+            _log_path = None
+            _pid = None
+            _session_file = None
+            _jsonl_watermark = 0
+            logger.warning(
+                f"[refresh_session] JSONL for {known_session_id} not ready yet; will retry"
+            )
+            return False
+        pid = _find_pane_claude_by_session(known_session_id)
+        if pid is None:
+            # JSONL 已在但 pane 中还没有该会话的 claude PID
+            _claude_session_id = known_session_id
+            _log_path = log_path
+            _pid = None
+            _session_file = None
             _jsonl_watermark = _count_jsonl_lines(log_path)
-        _session_id = sid
-        _log_path = log_path
-        _pid = pid
-        _session_file = Path(CLAUDE_HOME) / "sessions" / f"{pid}.json"
-        logger.info(f"Session: {sid} (PID: {pid})")
-        logger.info(f"Log: {log_path} (watermark={_jsonl_watermark})")
+            logger.warning(
+                f"[refresh_session] JSONL ok but no live PID in pane for "
+                f"{known_session_id}; will retry"
+            )
+            return False
+        _apply_binding(known_session_id, pid, log_path)
         return True
-    return False
+
+    # 普通路径：只扫描 bridge 自己 pane 内的 claude
+    sid, pid = find_current_session()
+    if not sid:
+        logger.warning("[refresh_session] No live Claude Code session found in bridge pane")
+        return False
+    log_path = find_jsonl_path(sid)
+    _apply_binding(sid, pid, log_path)
+    return True
 
 
 def _count_jsonl_lines(path: str) -> int:
@@ -170,11 +865,23 @@ def _count_jsonl_lines(path: str) -> int:
 
 
 def maybe_refresh_session() -> bool:
-    """Refresh session if the current session file disappeared (Claude Code restarted)."""
-    if _session_file and not _session_file.exists():
-        logger.info("Session file gone, refreshing...")
-        return refresh_session()
-    return True
+    """每次轮询检查绑定是否仍然健康。
+
+    原实现只在 _session_file 消失时刷新，且 _session_file 为 None（PID 丢失）
+    时直接返回 True —— 这正是 /resume 后 pid=None 永久卡死的根因。
+    现在：绑定 PID 存活且在 pane 内则 OK；否则从 pane 重新扫描绑定。"""
+    if _pid and _is_alive(_pid) and _is_claude_process(_pid) and _pid in _tmux_pane_pids():
+        return True
+    # 绑定已失效 / PID 未知：尝试从 pane 重新绑定（新 claude 可能已出现）
+    sid, pid = find_current_session()
+    if pid and sid:
+        logger.info(
+            f"[refresh_session] rebinding (was pid={_pid}, sid={_claude_session_id}) "
+            f"-> pid={pid}, sid={sid}"
+        )
+        _apply_binding(sid, pid, find_jsonl_path(sid))
+        return True
+    return False
 
 
 def get_session_status() -> Optional[Dict]:
@@ -192,8 +899,14 @@ def get_session_status() -> Optional[Dict]:
         return None
 
 
-async def send_to_claude(message: str):
-    """Send message to Claude Code via tmux."""
+async def send_to_claude(message: str) -> bool:
+    """Send message to Claude Code via tmux.
+
+    发送前必须确认 pane 内真的有存活 Claude；否则绝不把输入打进 Bash，
+    直接通知用户。返回是否成功送达。"""
+    if not await _ensure_claude_alive():
+        await send_message_rest(MASTER_OPENID, "❌ Claude Code 已退出，自动恢复失败")
+        return False
     proc = await asyncio.create_subprocess_exec(
         "tmux", "send-keys", "-t", f"{TMUX_SESSION}:", "Escape", ""
     )
@@ -208,15 +921,18 @@ async def send_to_claude(message: str):
         "tmux", "send-keys", "-t", f"{TMUX_SESSION}:", "Enter", ""
     )
     await proc.communicate()
-    logger.info(f"[Bridge -> Claude] {message[:100]}")
+    logger.info(f"[Bridge -> Claude] {message[:100]} (tmux={TMUX_SESSION}, project={_current_project})")
+    return True
 
 
 
 
 
 async def start_claude_in_tmux():
-    """Start Claude Code in tmux. Always kills any existing Claude first."""
-    # Ensure tmux session exists
+    """启动时确保 bridge 自己的 pane 里有 Claude，并绑定到它。
+
+    - pane 已有 claude → 直接绑定；
+    - pane 无 claude → 启动（优先恢复上次会话，其次全新启动）。"""
     proc = await asyncio.create_subprocess_exec(
         "tmux", "has-session", "-t", f"{TMUX_SESSION}:",
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
@@ -230,61 +946,125 @@ async def start_claude_in_tmux():
         await proc.communicate()
         await asyncio.sleep(1)
 
-        # Clear any stale input on shell line before starting Claude
-        for key in ["C-c", "C-c"]:
-            proc = await asyncio.create_subprocess_exec(
-                "tmux", "send-keys", "-t", f"{TMUX_SESSION}:", key, ""
-            )
-            await proc.communicate()
-            await asyncio.sleep(0.2)
-        # Start fresh Claude
-        proc = await asyncio.create_subprocess_exec(
-            "tmux", "send-keys", "-t", f"{TMUX_SESSION}:",
-            "cd /root && script -q -c 'claude --permission-mode auto' /dev/null", "Enter"
-        )
-        await proc.communicate()
-        # Wait for trust prompt, then press "1" to confirm
-        await asyncio.sleep(5)
-        proc = await asyncio.create_subprocess_exec(
-            "tmux", "send-keys", "-t", f"{TMUX_SESSION}:", "1", ""
-        )
-        await proc.communicate()
-        await asyncio.sleep(3)
+    if _pane_has_claude():
+        # claude 可能正停在 workspace trust prompt（有进程但还没有 session 文件）：
+        # 先跨过 prompt，再等 session 文件出现并绑定；实在绑定不了才走重启。
+        await _accept_trust_prompt_if_present(checks=5, interval=1.0)
+        if await _wait_for_any_binding(timeout=20):
+            return
+        sid, pid = find_current_session()
+        if pid and sid:
+            _apply_binding(sid, pid, find_jsonl_path(sid))
+            return
+        logger.warning("[startup] claude present but no session bound; will restart")
 
-    # 无论如何都要刷新绑定
-    refresh_session()
+    # pane 无 claude → 启动（优先恢复上次会话）
+    state = _load_state()
+    resume_sid = state.get("last_session_id")
+    start_cwd = state.get("cwd") or _current_cwd
+    if resume_sid and find_jsonl_path(resume_sid):
+        logger.info(f"[startup] auto-resume last session {resume_sid} (cwd={start_cwd})")
+        ok, info = await restart_claude_in_tmux(cwd=start_cwd, resume_session_id=resume_sid)
+        if ok:
+            return
+        logger.warning(f"[startup] auto-resume failed ({info}), starting fresh")
+    await restart_claude_in_tmux(cwd=_current_cwd)
 
 
 async def stop_claude_in_tmux():
-    """Stop Claude Code with Ctrl+C."""
-    for key in ["C-c", "Enter", "C-c"]:
-        proc = await asyncio.create_subprocess_exec(
-            "tmux", "send-keys", "-t", f"{TMUX_SESSION}:", key, ""
-        )
-        await proc.communicate()
-        await asyncio.sleep(0.3)
-    logger.info("Sent Ctrl+C to Claude")
+    """发送一次 Ctrl+C 中断当前任务，尽量保留 Claude 进程（供 /stop 使用）。"""
+    await _interrupt_claude_in_tmux()
+    if _pane_has_claude():
+        logger.info("Sent Ctrl+C to Claude (interrupt, claude still alive)")
+    else:
+        logger.info("Sent Ctrl+C to Claude (claude exited; will auto-recover on next message)")
 
 
-async def restart_claude_in_tmux():
-    """Restart Claude Code (kill and start new)."""
-    logger.info("Restarting Claude Code...")
-    await stop_claude_in_tmux()
-    await asyncio.sleep(2)
+async def restart_claude_in_tmux(cwd: Optional[str] = None, resume_session_id: Optional[str] = None):
+    """彻底重启 bridge 自己 pane 内的 Claude，并等待绑定成功。
+
+    - 先停掉 pane 内现有 Claude（C-c + 兜底 SIGTERM，只操作自己的 pane）；
+    - 确认 pane 回到 shell 后再启动，避免命令被打进旧 Claude 输入框；
+    - 轮询等待新 Claude 的 PID/session 文件出现并绑定；
+    - 只有完成绑定才返回 (True, info)；否则返回 (False, reason)，
+      绝不在 PID 缺失时谎报 "restarted"。
+
+    Returns (ok: bool, info: str)。"""
+    global _current_cwd, _current_project, _last_recovery_attempt
+    # 重启本身也计入恢复尝试：防止 poll 里的 _ensure_claude_alive 在本函数
+    # 执行期间并发再触发一次重启（20s 冷却）
+    _last_recovery_attempt = time.time()
+    logger.info(f"Restarting Claude Code... (cwd={cwd or 'default'}, resume={resume_session_id or 'no'})")
+
+    # 0. 停掉旧 Claude，并确认 pane 回到 shell
+    await _stop_pane_claude()
+
+    work_dir = str(Path(cwd).resolve()) if cwd else (_current_cwd or str(Path.home()))
+    if not os.path.isdir(work_dir):
+        logger.warning(f"[restart] cwd {work_dir} does not exist, falling back to HOME")
+        work_dir = str(Path.home())
+    if cwd:
+        _current_cwd = work_dir
+        _current_project = path_to_claude_project(work_dir)
+        CLAUDE_PROJECT = _current_project
+        logger.info(f"[Project] cwd={_current_cwd}\n[Project] project={_current_project}")
+    if resume_session_id:
+        logger.info(f"[Resume] launch_cwd={work_dir}")
+
+    # 1. 启动新 Claude（在确认回到 shell 之后；先清空可能残留的半行输入）
+    proc = await asyncio.create_subprocess_exec(
+        "tmux", "send-keys", "-t", f"{TMUX_SESSION}:", "C-c", ""
+    )
+    await proc.communicate()
+    await asyncio.sleep(0.3)
+    claude_cmd = "claude --permission-mode auto"
+    if resume_session_id:
+        claude_cmd += f" --resume {resume_session_id}"
     proc = await asyncio.create_subprocess_exec(
         "tmux", "send-keys", "-t", f"{TMUX_SESSION}:",
-        "cd /root && script -q -c 'claude --permission-mode auto' /dev/null", "Enter"
+        f"cd {work_dir} && script -q -c '{claude_cmd}' /dev/null", "Enter"
     )
     await proc.communicate()
-    # Wait for trust prompt, then press "1" to confirm
-    await asyncio.sleep(5)
-    proc = await asyncio.create_subprocess_exec(
-        "tmux", "send-keys", "-t", f"{TMUX_SESSION}:", "1", ""
-    )
-    await proc.communicate()
-    await asyncio.sleep(3)
-    refresh_session()
-    logger.info("Claude Code restarted")
+
+    # 2. 等待 claude 进程出现并接受信任提示（仅在确认 claude 在 pane 内时发 '1'）
+    deadline = time.time() + 20
+    while time.time() < deadline and not _pane_has_claude():
+        await asyncio.sleep(1.0)
+    if _pane_has_claude():
+        await _accept_trust_prompt_if_present()
+    else:
+        logger.error("[restart] claude process did not appear in pane within 20s")
+
+    # 3. 轮询绑定（Claude 刚启动时 session 文件可能尚未生成，允许重试）
+    if resume_session_id:
+        ok = await _wait_for_resumed_binding(resume_session_id, timeout=30)
+    else:
+        ok = await _wait_for_any_binding(timeout=30)
+
+    if ok:
+        logger.info(
+            f"Claude Code restarted and bound (sid={_claude_session_id}, pid={_pid}, "
+            f"project={CLAUDE_PROJECT})"
+        )
+        return True, f"sid={_claude_session_id}, pid={_pid}"
+    logger.error("[restart] Claude launch FAILED — no live claude bound in pane")
+    return False, "claude did not start in the pane"
+
+
+async def get_tmux_pane_cwd() -> Optional[str]:
+    """查询 tmux pane 实际 cwd（用于 /resume 后校验真实启动目录）。"""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "tmux", "display-message", "-p", "-t", f"{TMUX_SESSION}:",
+            "#{pane_current_path}",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await proc.communicate()
+        cwd = out.decode("utf-8", errors="replace").strip()
+        return cwd or None
+    except Exception:
+        return None
 
 
 def build_approval_keyboard() -> dict:
@@ -469,6 +1249,317 @@ async def send_message_rest(user_openid: str, content: str, *, keyboard: bool = 
         return False
 
 
+# ═══════════════════════════════════════════════════════════════
+# Media: QQ Bot 官方分片上传 (upload_prepare → PUT → part_finish → finalize)
+# ═══════════════════════════════════════════════════════════════
+
+import hashlib
+
+_IMAGE_EXT = {".jpg", ".jpeg", ".png", ".webp"}
+_FILE_EXT = {".pdf", ".docx", ".xlsx", ".pptx", ".txt", ".zip",
+             ".tar", ".gz", ".7z", ".csv", ".py", ".json", ".md", ".log",
+             ".html", ".css", ".sh", ".yaml", ".yml", ".toml", ".cfg",
+             ".svg", ".bmp", ".gif", ".tiff", ".mp4", ".mp3"}
+_IMAGE_MAX = 10 * 1024 * 1024   # 10MB
+_FILE_MAX  = 100 * 1024 * 1024  # 100MB（QQ 硬限制 200MB）
+
+# [[SEND_IMAGE:...]] / [[SEND_FILE:...]] 标记正则（仅匹配绝对路径）
+_SEND_IMG_RE = re.compile(r'\[\[SEND_IMAGE:(/.+?)\]\]')
+_SEND_FILE_RE = re.compile(r'\[\[SEND_FILE:(/.+?)\]\]')
+
+# upload_part_finish 可重试错误码
+_BIZ_CODE_RETRYABLE = 40093001
+
+
+def _compute_file_hashes(file_path: str) -> dict:
+    """单次读取文件，计算 md5 / sha1 / md5_10m（前 10002432 字节的 MD5）。"""
+    md5 = hashlib.md5()
+    sha1 = hashlib.sha1()
+    md5_10m = hashlib.md5()
+    bytes_read = 0
+    with open(file_path, "rb") as f:
+        while True:
+            chunk = f.read(8192)
+            if not chunk:
+                break
+            md5.update(chunk)
+            sha1.update(chunk)
+            if bytes_read < 10_002_432:
+                remaining = 10_002_432 - bytes_read
+                md5_10m.update(chunk[:remaining])
+            bytes_read += len(chunk)
+    return {
+        "md5": md5.hexdigest(),
+        "sha1": sha1.hexdigest(),
+        "md5_10m": md5_10m.hexdigest(),
+        "total_size": bytes_read,
+    }
+
+
+def _validate_local_file(file_path: str, max_size: int) -> tuple:
+    """验证本地文件。返回 (ok: bool, error_msg: str)"""
+    p = Path(file_path)
+    if not p.exists():
+        return False, f"文件不存在: {file_path}"
+    if not p.is_file():
+        return False, f"不是普通文件: {file_path}"
+    ext = p.suffix.lower()
+    allowed = _IMAGE_EXT if max_size == _IMAGE_MAX else (_IMAGE_EXT | _FILE_EXT)
+    if ext not in allowed:
+        return False, f"不支持的文件类型: {ext}（支持: {', '.join(sorted(allowed))}）"
+    size = p.stat().st_size
+    if size > max_size:
+        limit_mb = max_size / (1024 * 1024)
+        actual_mb = size / (1024 * 1024)
+        return False, f"文件过大: {actual_mb:.1f}MB（限制: {limit_mb:.0f}MB）"
+    return True, ""
+
+
+def _get_file_type(file_path: str) -> int:
+    """QQ 文件类型。1=图片, 4=文件"""
+    ext = Path(file_path).suffix.lower()
+    return 1 if ext in _IMAGE_EXT else 4
+
+
+async def _upload_file_to_qq(file_path: str, file_type: int, openid: str) -> Optional[str]:
+    """QQ 官方分片上传：prepare → PUT parts → part_finish → finalize。
+    返回 file_info 字符串。失败返回 None。"""
+    import httpx
+    token = await ensure_token()
+    base_headers = {"Authorization": f"QQBot {token}", "Content-Type": "application/json"}
+    fname = Path(file_path).name
+    fsize = Path(file_path).stat().st_size
+
+    try:
+        # ── Step 1: upload_prepare ──
+        logger.info(f"[Media] prepare upload: {fname} ({fsize} bytes, type={file_type})")
+        hashes = _compute_file_hashes(file_path)
+        prepare_body = {
+            "file_type": file_type,
+            "file_size": str(fsize),
+            "file_name": fname,
+            "md5": hashes["md5"],
+            "sha1": hashes["sha1"],
+            "md5_10m": hashes["md5_10m"],
+        }
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            resp = await client.post(
+                f"{API_BASE}/v2/users/{openid}/upload_prepare",
+                headers=base_headers, json=prepare_body,
+            )
+        if resp.status_code >= 400:
+            logger.error(f"[Media] prepare failed [{resp.status_code}]: {resp.text[:500]}")
+            return None
+        prep = resp.json()
+        # 响应可能被 data 包裹
+        if "data" in prep and isinstance(prep["data"], dict):
+            prep = prep["data"]
+        upload_id = prep.get("upload_id")
+        block_size = int(prep.get("block_size", "5242880"))
+        parts = prep.get("parts") or prep.get("part_list") or []
+        if not upload_id or not parts:
+            logger.error(f"[Media] bad prepare response: {json.dumps(prep, ensure_ascii=False)[:500]}")
+            return None
+        logger.info(f"[Media] upload_id={upload_id}, block_size={block_size}, parts={len(parts)}")
+
+        # ── Step 2: PUT + part_finish per part ──
+        # 本地 offset 从 0 顺序累加，不依赖 QQ 返回的 part["index"]（该值仅用于 upload_part_finish）
+        local_offset = 0
+        async with httpx.AsyncClient(timeout=120.0, follow_redirects=True) as client:
+            with open(file_path, "rb") as fh:
+                for display_num, part in enumerate(parts, 1):
+                    api_index = int(part.get("index", part.get("part_index", 0)))
+                    part_url = part.get("presigned_url", "")
+                    part_size = int(part.get("block_size", block_size))
+
+                    if part_size <= 0:
+                        logger.error(
+                            f"[Media] bad part_size: display={display_num} "
+                            f"api_index={api_index} part_size={part_size}"
+                        )
+                        return None
+
+                    # 连续读取
+                    fh.seek(local_offset)
+                    chunk = fh.read(part_size)
+
+                    if len(chunk) == 0:
+                        logger.error(
+                            f"[Media] empty chunk: display={display_num} "
+                            f"api_index={api_index} offset={local_offset} "
+                            f"part_size={part_size} fsize={fsize}"
+                        )
+                        return None
+
+                    logger.info(
+                        f"[Media] uploading part display={display_num} "
+                        f"api_index={api_index} offset={local_offset} bytes={len(chunk)}"
+                    )
+
+                    part_md5 = hashlib.md5(chunk).hexdigest()
+
+                    # PUT 到预签名 URL
+                    for put_retry in range(2):
+                        put_resp = await client.put(
+                            part_url, content=chunk,
+                            headers={"Content-Length": str(len(chunk))},
+                        )
+                        if 200 <= put_resp.status_code < 300:
+                            break
+                        if put_retry < 1:
+                            await asyncio.sleep(1.0)
+                    if put_resp.status_code >= 300:
+                        logger.error(
+                            f"[Media] part api_index={api_index} PUT failed "
+                            f"[{put_resp.status_code}]: {put_resp.text[:300]}"
+                        )
+                        return None
+
+                    # upload_part_finish（使用 QQ API 返回的 api_index）
+                    finish_body = {
+                        "upload_id": upload_id,
+                        "part_index": api_index,
+                        "block_size": str(len(chunk)),
+                        "md5": part_md5,
+                    }
+                    deadline = time.time() + 120
+                    while True:
+                        fin_resp = await client.post(
+                            f"{API_BASE}/v2/users/{openid}/upload_part_finish",
+                            headers=base_headers, json=finish_body,
+                        )
+                        if fin_resp.status_code < 400:
+                            break
+                        try:
+                            err_data = fin_resp.json()
+                            biz_code = err_data.get("biz_code") or err_data.get("code")
+                        except Exception:
+                            biz_code = None
+                        if biz_code == _BIZ_CODE_RETRYABLE and time.time() < deadline:
+                            logger.warning(
+                                f"[Media] part api_index={api_index} finish retryable (40093001), retrying..."
+                            )
+                            await asyncio.sleep(1.0)
+                            continue
+                        logger.error(
+                            f"[Media] part api_index={api_index} finish failed "
+                            f"[{fin_resp.status_code}]: {fin_resp.text[:500]}"
+                        )
+                        return None
+                    logger.info(f"[Media] part display={display_num} api_index={api_index} finished")
+
+                    local_offset += len(chunk)
+
+        # ── Step 3: finalize (POST /files with upload_id) ──
+        logger.info(f"[Media] finalize upload, upload_id={upload_id}")
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            for fin_retry in range(3):
+                final_resp = await client.post(
+                    f"{API_BASE}/v2/users/{openid}/files",
+                    headers=base_headers,
+                    json={"file_type": file_type, "upload_id": upload_id},
+                )
+                if final_resp.status_code < 400:
+                    break
+                if fin_retry < 2:
+                    await asyncio.sleep(2.0)
+        if final_resp.status_code >= 400:
+            logger.error(f"[Media] finalize failed [{final_resp.status_code}]: {final_resp.text[:500]}")
+            return None
+        result = final_resp.json()
+        if "data" in result and isinstance(result["data"], dict):
+            result = result["data"]
+        file_info = result.get("file_info") or result.get("file_uuid")
+        if not file_info:
+            logger.error(f"[Media] no file_info in finalize: {json.dumps(result, ensure_ascii=False)[:300]}")
+            return None
+        logger.info(f"[Media] file_info received: {file_info[:50]}...")
+        return file_info
+
+    except Exception as e:
+        logger.error(f"[Media] upload exception: {e}")
+        return None
+
+
+async def _send_media_message(file_info: str, openid: str) -> bool:
+    """发送 QQ 富媒体消息（msg_type=7）。"""
+    token = await ensure_token()
+    client = get_http_client()
+    headers = {
+        "Authorization": f"QQBot {token}",
+        "Content-Type": "application/json",
+        "User-Agent": "ClaudeCode-QQ-Bridge/3.0",
+    }
+    body = {"msg_type": 7, "media": {"file_info": file_info}, "msg_seq": _next_msg_seq(openid)}
+    try:
+        resp = await client.post(
+            f"{API_BASE}/v2/users/{openid}/messages",
+            headers=headers, json=body, timeout=30.0,
+        )
+        if resp.status_code >= 400:
+            logger.error(f"[Media] QQ send failed [{resp.status_code}]: {resp.text[:300]}")
+            return False
+        logger.info(f"[Media] QQ send success")
+        return True
+    except Exception as e:
+        logger.error(f"[Media] QQ send exception: {e}")
+        return False
+
+
+async def send_local_image(file_path: str, openid: str) -> str:
+    """上传并发送本地图片。返回结果描述字符串。"""
+    ok, err = _validate_local_file(file_path, _IMAGE_MAX)
+    if not ok:
+        return f"❌ {err}"
+    file_info = await _upload_file_to_qq(file_path, 1, openid)
+    if not file_info:
+        return f"❌ 图片上传失败: {Path(file_path).name}"
+    if await _send_media_message(file_info, openid):
+        return f"✅ 图片已发送: {Path(file_path).name}"
+    return f"❌ 图片发送失败: {Path(file_path).name}"
+
+
+async def send_local_file(file_path: str, openid: str) -> str:
+    """上传并发送本地文件。返回结果描述字符串。"""
+    ok, err = _validate_local_file(file_path, _FILE_MAX)
+    if not ok:
+        return f"❌ {err}"
+    file_type = _get_file_type(file_path)
+    file_info = await _upload_file_to_qq(file_path, file_type, openid)
+    if not file_info:
+        return f"❌ 文件上传失败: {Path(file_path).name}"
+    if await _send_media_message(file_info, openid):
+        return f"✅ 文件已发送: {Path(file_path).name}"
+    return f"❌ 文件发送失败: {Path(file_path).name}"
+
+
+def _extract_media_markers(text: str) -> tuple:
+    """扫描文本中的 [[SEND_IMAGE:...]] / [[SEND_FILE:...]] 标记。
+    返回 (clean_text, media_list)，其中 media_list = [{type, path}, ...]"""
+    media_list = []
+    for m in _SEND_IMG_RE.finditer(text):
+        media_list.append({"type": "image", "path": m.group(1)})
+    for m in _SEND_FILE_RE.finditer(text):
+        media_list.append({"type": "file", "path": m.group(1)})
+    clean = _SEND_IMG_RE.sub('', text)
+    clean = _SEND_FILE_RE.sub('', clean)
+    clean = re.sub(r'\n{3,}', '\n\n', clean).strip()
+    return clean, media_list
+
+
+async def _send_media_from_markers(media_list: list, openid: str):
+    """根据提取的 media 列表发送富媒体到 QQ。"""
+    for item in media_list:
+        try:
+            if item["type"] == "image":
+                result = await send_local_image(item["path"], openid)
+            else:
+                result = await send_local_file(item["path"], openid)
+            logger.info(f"[Media Marker] {result}")
+        except Exception as e:
+            logger.error(f"[Media Marker] exception: {e}")
+
+
 async def _wait_for_approval():
     """Block until approval is cleared. Returns when session leaves waiting state."""
     while True:
@@ -507,6 +1598,9 @@ async def periodic_poll():
     Order: JSONL text first, then approval button — so user sees
     Claude's message before being asked to approve."""
     global _jsonl_watermark, _is_generating, _last_typing_sent_time, _generating_since
+    global _claude_session_id, _log_path, _pid, _session_file
+    global CLAUDE_PROJECT, _current_cwd, _current_project
+    _poll_cycle = 0  # counter for periodic diagnostic logging
     while True:
         # 触发/续杯“正在输入中”的顶部状态
         now = time.time()
@@ -521,10 +1615,26 @@ async def periodic_poll():
             _generating_since = 0.0
 
         await asyncio.sleep(3)
+        _poll_cycle += 1
+        # Periodic diagnostic: log monitoring state every 10 cycles (~30s)
+        if _poll_cycle % 10 == 0:
+            jsonl_exists = bool(_log_path and Path(_log_path).exists())
+            jsonl_lines = _count_jsonl_lines(_log_path) if jsonl_exists else 0
+            logger.info(
+                f"[Poll diag] cycle={_poll_cycle}, "
+                f"claude_sid={_claude_session_id}, pid={_pid}, "
+                f"project={_current_project}, cwd={_current_cwd}, "
+                f"jsonl={_log_path}, jsonl_exists={jsonl_exists}, "
+                f"jsonl_lines={jsonl_lines}, watermark={_jsonl_watermark}, "
+                f"is_generating={_is_generating}, "
+                f"session_file={str(_session_file) if _session_file else 'None'}"
+            )
         try:
             # 0. Refresh session if process died
             if not maybe_refresh_session():
-                continue
+                # pane 无存活 Claude：尝试自动恢复（带限流）；恢复失败则跳过本周期
+                if not await _ensure_claude_alive():
+                    continue
 
             # 1. Read JSONL for new assistant replies (BEFORE approval check)
             new_texts = []
@@ -550,6 +1660,48 @@ async def periodic_poll():
                                     t = block.get("text", "").strip()
                                     if t:
                                         new_texts.append(t)
+            else:
+                # JSONL file missing — try to recover
+                if _claude_session_id:
+                    # If we have a session_id but no JSONL (e.g., after /resume),
+                    # retry find_jsonl_path — the JSONL may have appeared
+                    retry_path = find_jsonl_path(_claude_session_id)
+                    if retry_path:
+                        logger.info(
+                            f"[Poll] JSONL appeared! {retry_path} — rebinding watcher"
+                        )
+                        _log_path = retry_path
+                        # Update project tracking from the found path
+                        actual_project = Path(retry_path).parent.name
+                        _current_project = actual_project
+                        if actual_project != CLAUDE_PROJECT:
+                            logger.info(
+                                f"[Poll] CLAUDE_PROJECT updated: {CLAUDE_PROJECT} -> {actual_project}"
+                            )
+                            CLAUDE_PROJECT = actual_project
+                        logger.info(
+                            f"[Project] project={_current_project}\n"
+                            f"[Watcher] path={_log_path}"
+                        )
+                        # Skip old lines, only capture new output
+                        _jsonl_watermark = _count_jsonl_lines(retry_path)
+                        logger.info(f"[Watcher] watermark={_jsonl_watermark}")
+                    else:
+                        logger.warning(
+                            f"[Poll] JSONL still missing for claude_sid={_claude_session_id}. "
+                            f"project={_current_project}. Will retry."
+                        )
+                else:
+                    logger.warning(
+                        f"[Poll] JSONL file missing: {_log_path}. "
+                        f"claude_sid={_claude_session_id}, CLAUDE_PROJECT={CLAUDE_PROJECT}. "
+                        f"Attempting session refresh..."
+                    )
+                    if not refresh_session():
+                        logger.error(
+                            f"[Poll] Session refresh failed — no live Claude Code session. "
+                            f"Will retry in next poll cycle."
+                        )
 
             # 2. Check approval status (session file)
             status = get_session_status()
@@ -563,12 +1715,17 @@ async def periodic_poll():
             if approval_pending:
                 _is_generating = False  # 进入等待授权，关闭输入状态
                 _generating_since = 0.0
-                # Send text first (as normal message), then approval button (separate message)
+                # Send text first, then media markers, then approval button
                 if new_texts:
                     reply = "\n\n".join(new_texts)
-                    logger.info(f"[Poll -> QQ Text] {reply[:80]}")
-                    await send_message_rest(MASTER_OPENID, reply[:1500])
-                    await asyncio.sleep(0.3)  # small gap to avoid QQ rate limit
+                    clean_reply, media_list = _extract_media_markers(reply)
+                    if clean_reply:
+                        logger.info(f"[Poll -> QQ Text] {clean_reply[:80]}")
+                        await send_message_rest(MASTER_OPENID, clean_reply[:1500])
+                        await asyncio.sleep(0.3)
+                    if media_list:
+                        await _send_media_from_markers(media_list, MASTER_OPENID)
+                        await asyncio.sleep(0.3)
 
                 logger.info("[Poll] Approval detected, sending QQ button")
                 await send_message_rest(MASTER_OPENID, "🔐 **Claude Code 需要您的确认**", keyboard=True)
@@ -578,11 +1735,22 @@ async def periodic_poll():
                 logger.info("[Poll] Approval handled, resumed polling")
                 continue
 
-            # 3. No approval pending — just push text if any
+            # 3. No approval pending — push text + media
             if new_texts:
                 reply = "\n\n".join(new_texts)
-                logger.info(f"[Poll -> QQ] {reply[:100]}")
-                await send_message_rest(MASTER_OPENID, reply[:1500])
+                clean_reply, media_list = _extract_media_markers(reply)
+                if clean_reply:
+                    logger.info(
+                        f"[Poll -> QQ] {clean_reply[:100]} "
+                        f"(from {_log_path}, {len(new_texts)} blocks)"
+                    )
+                    await send_message_rest(MASTER_OPENID, clean_reply[:1500])
+                if media_list:
+                    logger.info(f"[Poll -> QQ Media] {len(media_list)} file(s)")
+                    await _send_media_from_markers(media_list, MASTER_OPENID)
+            elif _is_generating:
+                # We're expecting output but JSONL hasn't updated yet — log periodically
+                pass  # silence is normal while Claude is thinking
         except Exception as e:
             logger.error(f"[Poll] error: {e}")
 
@@ -595,26 +1763,30 @@ def _save_master_openid(openid: str):
     candidates = [
         Path(".env"),
         Path(__file__).parent / ".env",
-        Path("/root/claude-code-qq-bridge/.env"),
+        Path.home() / "agent-keep" / ".env",
     ]
     for p in candidates:
-        if p.exists():
-            try:
-                lines = p.read_text(encoding="utf-8").splitlines(keepends=True)
-                found = False
-                for i, line in enumerate(lines):
-                    if line.startswith("MASTER_OPENID="):
-                        lines[i] = f"MASTER_OPENID={openid}\n"
-                        found = True
-                        break
-                if not found:
-                    lines.append(f"MASTER_OPENID={openid}\n")
-                p.write_text("".join(lines), encoding="utf-8")
-                MASTER_OPENID = openid
-                logger.info(f"[AutoBind] MASTER_OPENID updated -> {openid}")
-                return
-            except Exception as e:
-                logger.error(f"[AutoBind] Failed to save: {e}")
+        try:
+            if not p.exists():
+                continue
+        except PermissionError:
+            continue
+        try:
+            lines = p.read_text(encoding="utf-8").splitlines(keepends=True)
+            found = False
+            for i, line in enumerate(lines):
+                if line.startswith("MASTER_OPENID="):
+                    lines[i] = f"MASTER_OPENID={openid}\n"
+                    found = True
+                    break
+            if not found:
+                lines.append(f"MASTER_OPENID={openid}\n")
+            p.write_text("".join(lines), encoding="utf-8")
+            MASTER_OPENID = openid
+            logger.info(f"[AutoBind] MASTER_OPENID updated -> {openid}")
+            return
+        except Exception as e:
+            logger.error(f"[AutoBind] Failed to save: {e}")
     # Fallback: write to first candidate
     try:
         candidates[0].write_text(f"MASTER_OPENID={openid}\n", encoding="utf-8")
@@ -626,7 +1798,7 @@ def _save_master_openid(openid: str):
 
 async def handle_c2c_message(d: dict):
     """Handle C2C message from QQ user. Supports text + attachments (images/files)."""
-    global _last_msg_id, _bot_openid, _is_generating
+    global _last_msg_id, _bot_openid, _is_generating, _tracked_mode, _resume_mapping, _generating_since
     msg_id = str(d.get("id", ""))
     if not msg_id or is_duplicate(msg_id):
         return
@@ -658,6 +1830,9 @@ async def handle_c2c_message(d: dict):
         if len(parts) >= 3:
             keystroke = {"allow": "1", "allow_always": "2", "deny": "3"}.get(parts[2])
             if keystroke:
+                if not _pane_has_claude():
+                    logger.warning("[Approval] claude not alive in pane — NOT sending keystroke to bash")
+                    return
                 logger.info(f"[Approval] Sending keystroke: {keystroke}")
                 proc = await asyncio.create_subprocess_exec(
                     "tmux", "send-keys", "-t", f"{TMUX_SESSION}:", keystroke, ""
@@ -665,18 +1840,384 @@ async def handle_c2c_message(d: dict):
                 await proc.communicate()
         return
 
-    # Commands
-    if content.strip().lower() in ["/new", "/reset", "/qingkong", "/xin duihua"]:
-        _is_generating = False
-        logger.info("[Recv] New session command")
-        await restart_claude_in_tmux()
-        await send_message_rest(user_openid, "Session restarted.")
-        return
-    if content.strip().lower() in ["/stop", "/tingzhi", "/kill"]:
+    # ═══════════════════════════════════════════════════════════
+    # Command Routing: 所有特殊命令在此分发，处理后必须 return
+    # ═══════════════════════════════════════════════════════════
+    lower = content.strip().lower()
+
+    # --- A. /stop（bridge 自己处理，不需要锁）---
+    if lower in ["/stop", "/tingzhi", "/kill"]:
         _is_generating = False
         logger.info("[Recv] Stop command")
         await stop_claude_in_tmux()
         await send_message_rest(user_openid, "⛔ Interrupted.")
+        return
+
+    # --- A. /resume（bridge 自己处理）---
+    if lower.startswith(("/resume", "/huifu", "/history")):
+        _is_generating = False
+        raw = content.strip()
+        parts = raw.split(None, 1)
+
+        # /resume N → 恢复指定会话（需要锁）
+        if len(parts) == 2 and parts[1].strip().isdigit():
+            idx = int(parts[1].strip())
+            entry = _resume_mapping.get(idx)
+            if not entry:
+                await send_message_rest(user_openid, "⚠️ 未找到对应会话，请先发送 /resume 查看列表")
+                return
+            sid = entry.get("id")
+            logger.info(f"[Recv] /resume {idx} -> session_id={sid}")
+            # Look up the target JSONL path before restarting so we can log it
+            target_jsonl = entry.get("jsonl_path") or find_jsonl_path(sid)
+            # 真实 target_cwd：优先从目标 JSONL 读取（会话启动时记录），
+            # 其次用列表时已提取的值，最后尝试从项目名反向推导。
+            # 禁止回退到 HOME / bridge 启动目录 —— 解析不到就中止恢复。
+            target_cwd = (
+                (extract_cwd_from_jsonl(target_jsonl) if target_jsonl else None)
+                or entry.get("cwd")
+                or (project_name_to_cwd(Path(target_jsonl).parent.name) if target_jsonl else None)
+            )
+            logger.info(
+                f"[Resume] target session_id={sid}\n"
+                f"[Resume] target jsonl={target_jsonl}\n"
+                f"[Resume] target_cwd={target_cwd}\n"
+                f"[Resume] current project={_current_project}"
+            )
+            if not target_cwd or not os.path.isdir(target_cwd):
+                logger.error(
+                    f"[Resume] ABORT: cannot resolve valid target_cwd for session "
+                    f"{sid} (jsonl={target_jsonl})"
+                )
+                await send_message_rest(
+                    user_openid,
+                    "⚠️ 无法确定该会话的工作目录，已取消恢复（避免在错误目录启动）。",
+                )
+                return
+            await send_message_rest(user_openid, f"⏳ 正在恢复会话 {idx}...")
+            async with _cmd_lock:
+                ok, info = await restart_claude_in_tmux(cwd=target_cwd, resume_session_id=sid)
+            if not ok:
+                logger.error(f"[Resume] FAILED to restore session {sid}: {info}")
+                await send_message_rest(
+                    user_openid,
+                    f"❌ 恢复会话 {idx} 失败：{info}。\nClaude 未能启动，请稍后重试或发送 /resume 查看列表。",
+                )
+                _resume_mapping.clear()
+                return
+            # 绑定成功后 refresh_session 已更新 _current_cwd、_current_project、
+            # _log_path、watermark —— 这里只做核对与日志
+            tmux_cwd = await get_tmux_pane_cwd()
+            logger.info(
+                f"[Resume] tmux_cwd={tmux_cwd}\n"
+                f"[Resume] after restart: cwd={_current_cwd}, "
+                f"project={_current_project}, jsonl={_log_path}, "
+                f"watermark={_jsonl_watermark}"
+            )
+            await send_message_rest(
+                user_openid,
+                f"✅ 已恢复会话 {idx}，可以继续对话了。\n📁 cwd: {target_cwd}",
+            )
+            _resume_mapping.clear()
+            return
+
+        # 裸 /resume → 非阻塞列出会话（不持锁，不影响 Claude）
+        logger.info(f"[Resume] listing project={_current_project}, cwd={_current_cwd}")
+        sessions = list_recent_sessions(limit=10)
+        if not sessions:
+            await send_message_rest(user_openid, f"📭 当前项目（{_current_project}）没有历史会话。")
+            return
+        _resume_mapping.clear()
+        lines = [f"**📋 历史会话（{_current_project}）**\n"]
+        for i, s in enumerate(sessions, 1):
+            # 保存全量信息: session_id / jsonl_path / target_cwd / target_project
+            _resume_mapping[i] = s
+            cur = " 🟢*当前*" if s["is_current"] else ""
+            lines.append(f"[{i}] `{s['time']}` [{s['size']} | {s['tokens']}]{cur}")
+            lines.append(f"    {s['title'][:100]}")
+        lines.append(f"\n回复 `/resume N` 恢复会话（如 `/resume 1`）")
+        await send_message_rest(user_openid, "\n".join(lines))
+        return
+
+    # --- A. /cd <path>（bridge 自己处理，需要锁）---
+    if lower.startswith("/cd"):
+        _is_generating = False
+        target_path = content.strip()[3:].strip()
+        if not target_path:
+            await send_message_rest(user_openid, "⚠️ 用法: /cd <路径>\n例如: /cd /mnt/e/my-project")
+            return
+        target = Path(target_path)
+        if not target.exists():
+            await send_message_rest(user_openid, f"⚠️ 目录不存在: {target_path}")
+            return
+        if not target.is_dir():
+            await send_message_rest(user_openid, f"⚠️ 不是目录: {target_path}")
+            return
+        logger.info(f"[Recv] /cd command -> {target_path}")
+        async with _cmd_lock:
+            ok, info = await restart_claude_in_tmux(cwd=str(target))
+        if not ok:
+            logger.error(f"[cd] FAILED to switch to {target_path}: {info}")
+            await send_message_rest(
+                user_openid,
+                f"❌ 切换到 {target_path} 失败：{info}",
+            )
+            return
+        logger.info(
+            f"[Project] after /cd: cwd={_current_cwd}, project={_current_project}, "
+            f"jsonl={_log_path}, watermark={_jsonl_watermark}"
+        )
+        await send_message_rest(
+            user_openid,
+            f"✅ 已切换到 {target_path}\n项目: {_current_project}\n新会话已启动。"
+        )
+        return
+
+    # --- A. /sendimg <path>（发送本地图片到 QQ）---
+    if lower.startswith("/sendimg"):
+        _is_generating = False
+        img_path = content.strip()[8:].strip()
+        if not img_path:
+            await send_message_rest(user_openid, "⚠️ 用法: /sendimg <本地图片路径>\n例如: /sendimg /mnt/e/pics/photo.jpg")
+            return
+        logger.info(f"[Recv] /sendimg: {img_path}")
+        result = await send_local_image(img_path, user_openid)
+        await send_message_rest(user_openid, result)
+        return
+
+    # --- A. /sendfile <path>（发送本地文件到 QQ）---
+    if lower.startswith("/sendfile"):
+        _is_generating = False
+        f_path = content.strip()[9:].strip()
+        if not f_path:
+            await send_message_rest(user_openid, "⚠️ 用法: /sendfile <本地文件路径>\n例如: /sendfile /mnt/e/data/report.pdf")
+            return
+        logger.info(f"[Recv] /sendfile: {f_path}")
+        result = await send_local_file(f_path, user_openid)
+        await send_message_rest(user_openid, result)
+        return
+
+    # --- A. /mode 和 /mode status（bridge 状态机）---
+    if lower.startswith("/mode"):
+        _is_generating = False
+        parts = content.strip().split(None, 1)
+
+        # /mode status → 仅查询，不切换
+        if len(parts) == 2 and parts[1].strip().lower() == "status":
+            from_session = _try_read_mode_from_session()
+            if from_session:
+                await send_message_rest(user_openid, f"📌 当前权限模式: **{from_session}**（来源: Claude session）")
+            else:
+                await send_message_rest(user_openid, f"📌 当前权限模式: **{_tracked_mode}**（来源: bridge tracking）\nClaude 启动参数: `--permission-mode auto`")
+            return
+
+        # /mode（无参数）→ 切换模式
+        logger.info(f"[Recv] /mode command (tracked={_tracked_mode})")
+        # 先尝试从 session 读取真实模式
+        from_session = _try_read_mode_from_session()
+        if from_session:
+            # 如果能读到真实模式，以此为基准切换
+            try:
+                cur_idx = _MODE_CYCLE.index(from_session)
+            except ValueError:
+                cur_idx = _MODE_CYCLE.index(_tracked_mode) if _tracked_mode in _MODE_CYCLE else 0
+            source = "Claude session"
+        else:
+            # 用 bridge 状态机
+            try:
+                cur_idx = _MODE_CYCLE.index(_tracked_mode)
+            except ValueError:
+                cur_idx = 0
+            source = "bridge tracking"
+
+        next_idx = (cur_idx + 1) % len(_MODE_CYCLE)
+        next_mode = _MODE_CYCLE[next_idx]
+
+        # 发送 BTab 到 tmux
+        async with _cmd_lock:
+            proc = await asyncio.create_subprocess_exec(
+                "tmux", "send-keys", "-t", f"{TMUX_SESSION}:", "BTab", ""
+            )
+            await proc.communicate()
+            await asyncio.sleep(1.0)
+            # 尝试 capture-pane 验证（best effort，不阻塞）
+            try:
+                captured = await capture_pane_stable(timeout=4.0)
+                for keyword in _MODE_CYCLE:
+                    if keyword in captured:
+                        next_mode = keyword
+                        source = "capture-pane"
+                        break
+            except Exception:
+                pass
+
+        _tracked_mode = next_mode
+        logger.info(f"[Mode] Switched to {next_mode} (source={source})")
+        await send_message_rest(user_openid, f"🔄 权限模式已切换: **{next_mode}**\n（来源: {source}）")
+        return
+
+    # --- B. /context（TUI 命令，capture-pane 解析）---
+    if lower == "/context":
+        _is_generating = False
+        logger.info("[Recv] /context command")
+        async with _cmd_lock:
+            # Send Escape to clear any popup, then /context
+            for key in ["Escape", "Escape"]:
+                proc = await asyncio.create_subprocess_exec(
+                    "tmux", "send-keys", "-t", f"{TMUX_SESSION}:", key, ""
+                )
+                await proc.communicate()
+                await asyncio.sleep(0.15)
+            proc = await asyncio.create_subprocess_exec(
+                "tmux", "send-keys", "-t", f"{TMUX_SESSION}:", "/context", "Enter"
+            )
+            await proc.communicate()
+            await asyncio.sleep(1.5)
+            captured = await capture_pane_stable(timeout=10.0)
+        # 解析 Context Usage 行 (例: "Messages: 12.3K tokens (45%)")
+        context_info = {}
+        for line in captured.split("\n"):
+            line = line.strip()
+            if ":" in line and ("token" in line.lower() or "%" in line):
+                # Clean up box-drawing chars
+                clean = line.lstrip("│├└┌┐┘└─╭╰╯╭╮├┤┴┬┼ ").strip()
+                if ":" in clean:
+                    key, _, val = clean.partition(":")
+                    key = key.strip()
+                    val = val.strip()
+                    if key and val:
+                        context_info[key] = val
+        if context_info:
+            lines = ["**📊 Context Usage**\n"]
+            for k, v in context_info.items():
+                lines.append(f"- **{k}**: {v}")
+            await send_message_rest(user_openid, "\n".join(lines))
+        else:
+            # Fallback: return last few relevant lines
+            relevant = [l.strip() for l in captured.split("\n") if l.strip() and "token" in l.lower()]
+            if relevant:
+                await send_message_rest(user_openid, "**📊 Context Usage**\n" + "\n".join(relevant[-8:]))
+            else:
+                await send_message_rest(user_openid, "⚠️ 无法解析 context 输出，请稍后重试")
+        return
+
+    # --- B. /compact [instructions]（Claude slash command，需等待完成 + 重新绑定）---
+    if lower.startswith("/compact"):
+        _is_generating = False
+        compact_msg = content.strip()
+        logger.info(f"[Recv] /compact command: {compact_msg[:60]}")
+        async with _cmd_lock:
+            if not await send_to_claude(compact_msg):
+                return
+            # 等待 Claude 完成 compact（轮询 session status）
+            await asyncio.sleep(2)
+            for _ in range(60):  # max 2 min wait
+                status = get_session_status()
+                if status and status.get("status") in ("idle", "shell"):
+                    break
+                await asyncio.sleep(2)
+            # 重新绑定当前 session/JSONL
+            refresh_session()
+            # 再发送 /context 获取压缩后的使用量
+            for key in ["Escape", "Escape"]:
+                proc = await asyncio.create_subprocess_exec(
+                    "tmux", "send-keys", "-t", f"{TMUX_SESSION}:", key, ""
+                )
+                await proc.communicate()
+                await asyncio.sleep(0.15)
+            proc = await asyncio.create_subprocess_exec(
+                "tmux", "send-keys", "-t", f"{TMUX_SESSION}:", "/context", "Enter"
+            )
+            await proc.communicate()
+            await asyncio.sleep(1.5)
+            captured = await capture_pane_stable(timeout=10.0)
+        # 提取 token 相关行
+        token_lines = [l.strip() for l in captured.split("\n") if "token" in l.lower() or "%" in l]
+        if token_lines:
+            await send_message_rest(user_openid, "✅ **压缩完成**\n" + "\n".join(token_lines[-6:]))
+        else:
+            await send_message_rest(user_openid, "✅ **压缩完成**（session 已重新绑定）")
+        return
+
+    # --- B. /clear 或 /new（重启 Claude，识别新 session）---
+    if lower in ["/clear", "/new", "/reset", "/qingkong", "/xin duihua"]:
+        _is_generating = False
+        logger.info("[Recv] /clear command")
+        async with _cmd_lock:
+            ok, info = await restart_claude_in_tmux()
+        if not ok:
+            await send_message_rest(user_openid, f"❌ 新会话启动失败：{info}")
+            return
+        if _claude_session_id:
+            await send_message_rest(user_openid, f"✅ 新会话已启动\nID: `{_claude_session_id[:8]}...`\n项目: {CLAUDE_PROJECT}")
+        else:
+            await send_message_rest(user_openid, "✅ 新会话已启动")
+        return
+
+    # --- C. /btw <question>（TUI side question，不写入 JSONL）---
+    if lower.startswith(("/btw", "/by-the-way")):
+        _is_generating = False
+        cmd_end = content.strip().find(" ")
+        btw_question = content.strip()[cmd_end:].strip() if cmd_end > 0 else ""
+        if not btw_question:
+            await send_message_rest(user_openid, "⚠️ 用法: /btw <问题>\n例如: /btw 这个函数的时间复杂度是多少")
+            return
+        logger.info(f"[Recv] /btw: {btw_question[:60]}")
+        await send_message_rest(user_openid, f"💬 BTW 查询中: *{btw_question[:80]}*")
+
+        async with _cmd_lock:
+            # 先确认 pane 内有存活 Claude，绝不对 Bash 发按键
+            if not await _ensure_claude_alive():
+                await send_message_rest(MASTER_OPENID, "❌ Claude Code 已退出，自动恢复失败")
+                return
+            # 清除弹窗
+            for key in ["Escape", "Escape"]:
+                proc = await asyncio.create_subprocess_exec(
+                    "tmux", "send-keys", "-t", f"{TMUX_SESSION}:", key, ""
+                )
+                await proc.communicate()
+                await asyncio.sleep(0.15)
+            # 发送 /btw
+            if not await send_to_claude(f"/btw {btw_question}"):
+                return
+
+            # 轮询等待 BTW 面板稳定（连续 3 次相同且不含 Answering）
+            btw_answer = ""
+            deadline = time.time() + 60.0
+            STABLE_COUNT = 3
+            POLL_INTERVAL = 0.5
+            prev = ""
+            stable = 0
+            while time.time() < deadline:
+                await asyncio.sleep(POLL_INTERVAL)
+                cur = await _capture_pane()
+                if cur == prev:
+                    stable += 1
+                else:
+                    stable = 0
+                    prev = cur
+                # 需要稳定且不含 "Answering"（含 … 或 ...）
+                has_answering = "Answering" in cur
+                if stable >= STABLE_COUNT and not has_answering:
+                    btw_answer = _extract_btw_answer(cur)
+                    if btw_answer:
+                        break
+                    # 提取为空但稳定 → 可能面板已消失，再等一小段
+                    if stable >= STABLE_COUNT + 4:
+                        break
+
+            # 关闭 BTW 面板
+            proc = await asyncio.create_subprocess_exec(
+                "tmux", "send-keys", "-t", f"{TMUX_SESSION}:", "Escape", ""
+            )
+            await proc.communicate()
+
+        if btw_answer:
+            await send_message_rest(user_openid, f"💬 **BTW**\n{btw_answer[:1500]}")
+        elif time.time() >= deadline:
+            await send_message_rest(user_openid, "⚠️ BTW 回答超时（60s），请重试")
+        else:
+            await send_message_rest(user_openid, "⚠️ 未能提取 BTW 回答，请稍后重试")
         return
 
     # ── 处理图片/文件附件 ─────────────────────────────
@@ -690,6 +2231,41 @@ async def handle_c2c_message(d: dict):
                 attachment_lines.append(f"🖼 图片: {att_url}")
             else:
                 attachment_lines.append(f"📎 文件: {att_url}")
+
+    # --- A. /pwd（Bridge 本地处理，不经过 Claude）---
+    if lower == "/pwd":
+        _is_generating = False
+        await send_message_rest(user_openid, f"📁 当前目录：\n{_current_cwd}")
+        return
+
+    # --- A. /ls [path]（Bridge 本地处理，不经过 Claude）---
+    if lower == "/ls" or lower.startswith("/ls "):
+        _is_generating = False
+        arg = content.strip()[3:].strip()  # everything after "/ls"
+        target = Path(arg).resolve() if arg else Path(_current_cwd)
+        if not target.exists():
+            await send_message_rest(user_openid, f"❌ 目录不存在: {target}")
+            return
+        if not target.is_dir():
+            await send_message_rest(user_openid, f"❌ 不是目录: {target}")
+            return
+        try:
+            entries = sorted(target.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower()))
+        except PermissionError:
+            await send_message_rest(user_openid, f"❌ 无权限读取目录: {target}")
+            return
+        # Filter hidden files, build list
+        visible = [e for e in entries if not e.name.startswith(".")]
+        MAX_SHOW = 50
+        lines = [f"📁 {target}\n"]
+        for entry in visible[:MAX_SHOW]:
+            suffix = "/" if entry.is_dir() else ""
+            lines.append(entry.name + suffix)
+        remaining = len(visible) - MAX_SHOW
+        if remaining > 0:
+            lines.append(f"\n... 还有 {remaining} 项未显示")
+        await send_message_rest(user_openid, "\n".join(lines))
+        return
 
     # ── 组装发给 Claude 的消息 ────────────────────────
     if content and attachment_lines:
@@ -806,10 +2382,14 @@ async def event_loop(ws):
                         logger.info("Session resumed")
                     elif t == "C2C_MESSAGE_CREATE":
                         task = asyncio.create_task(handle_c2c_message(d))
-                        task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+                        task.add_done_callback(
+                            lambda t: logger.error(f"[Task] C2C message handler failed: {t.exception()}") if t.exception() else None
+                        )
                     elif t == "INTERACTION_CREATE":
                         task = asyncio.create_task(handle_interaction(d))
-                        task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+                        task.add_done_callback(
+                            lambda t: logger.error(f"[Task] Interaction handler failed: {t.exception()}") if t.exception() else None
+                        )
                     continue
             elif msg.type == 9:
                 logger.warning("WS close received")
@@ -832,10 +2412,14 @@ async def main():
 
     # 1. Start Claude Code in tmux
     await start_claude_in_tmux()
-    if not _session_id:
+    if not _claude_session_id:
         logger.warning("No Claude Code session found, retrying in 10s...")
         await asyncio.sleep(10)
-        refresh_session()
+        if not await _ensure_claude_alive():
+            logger.error(
+                "Bridge started but no live Claude session could be bound. "
+                "Will auto-recover on next QQ message."
+            )
 
     # 2. Start background polling
     asyncio.create_task(periodic_poll())
