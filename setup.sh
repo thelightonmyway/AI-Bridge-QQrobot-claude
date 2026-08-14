@@ -15,6 +15,10 @@
 #   ./setup.sh                          # 创建 .env 模板，再手动填凭据
 #   ./setup.sh <APP_ID> <CLIENT_SECRET> # 直接写入 QQ 机器人凭据
 #
+# 安装完成后，从任意目录更新到最新版：
+#   ai-bridge-update            # 只更新
+#   ai-bridge-update --restart  # 更新后安全重启 QQ Bridge
+#
 # 本项目基于 zz327455573/agent-keep 重开发（致谢原作者，详见 README），
 # 但作为独立维护版本发布，安装直接取自本仓库（thelightonmyway/AI-Bridge-QQrobot-claude）。
 # 仓库内所有路径均从 $HOME 动态推导，与具体 Linux 用户名无关，无需任何修补。
@@ -117,7 +121,39 @@ fi
 
 cd "${REPO_DIR}"
 
-# ── 5. 创建 .env 配置文件 ────────────────────────────────────────────────────
+# ── 5. 安装全局更新命令 ai-bridge-update（幂等，可重复执行） ─────────────────
+# 真正的更新逻辑在 update.sh；这里只装一个稳定 launcher，原样透传参数。
+info "安装全局更新命令 ai-bridge-update..."
+LAUNCHER_DIR="${HOME_DIR}/.local/bin"
+mkdir -p "${LAUNCHER_DIR}"
+
+# 保证 update.sh 可执行（避免 git 未保留可执行位）
+chmod +x "${REPO_DIR}/update.sh" 2>/dev/null || true
+
+LAUNCHER="${LAUNCHER_DIR}/ai-bridge-update"
+cat > "${LAUNCHER}" << 'LAUNCHER_EOF'
+#!/usr/bin/env bash
+# AI-Bridge-QQrobot-claude 全局更新命令（由 setup.sh 自动生成，可安全刷新）。
+# 只作为稳定入口，完整透传参数给 update.sh：
+#   ai-bridge-update --restart  ->  $HOME/AI-Bridge-QQrobot-claude/update.sh --restart
+exec "${HOME}/AI-Bridge-QQrobot-claude/update.sh" "$@"
+LAUNCHER_EOF
+chmod +x "${LAUNCHER}"
+ok "已安装: ${LAUNCHER}"
+
+# 若 ~/.local/bin 不在 bash/zsh 的 rc 文件中，则幂等追加 PATH（不产生重复）
+ensure_in_path() {
+    local rc_file="$1"
+    [ -f "${rc_file}" ] || return 0
+    if ! grep -qF 'PATH="$HOME/.local/bin:$PATH"' "${rc_file}" 2>/dev/null; then
+        printf '\n# Add ~/.local/bin to PATH (for ai-bridge-update)\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "${rc_file}"
+        ok "已将 ~/.local/bin 加入 ${rc_file} 的 PATH"
+    fi
+}
+ensure_in_path "${HOME_DIR}/.bashrc"
+ensure_in_path "${HOME_DIR}/.zshrc"
+
+# ── 6. 创建 .env 配置文件 ────────────────────────────────────────────────────
 ENV_FILE="${REPO_DIR}/.env"
 
 # 无参数时的默认配置模板
@@ -171,7 +207,7 @@ else
     ok ".env 模板已创建"
 fi
 
-# ── 6. 最终验证 ─────────────────────────────────────────────────────────────
+# ── 7. 最终验证 ─────────────────────────────────────────────────────────────
 echo ""
 echo "  ╔══════════════════════════════════════════════╗"
 echo "  ║   ✅ 部署完成！                              ║"
@@ -204,6 +240,16 @@ echo "  ├─ 直接发消息  = 与 Claude 对话"
 echo "  ├─ /resume     = 恢复最近会话"
 echo "  ├─ /new        = 开启新会话"
 echo "  └─ /stop       = 中断当前任务"
+echo ""
+echo "  ────────────────────────────────────────────────"
+echo ""
+echo "  安装完成。"
+echo ""
+echo "  以后更新到最新版："
+echo "    ai-bridge-update"
+echo ""
+echo "  更新并重启 QQ Bridge："
+echo "    ai-bridge-update --restart"
 echo ""
 
 APP_ID_VALUE=$(grep "APP_ID=" "${ENV_FILE}" | cut -d= -f2)

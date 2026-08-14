@@ -87,3 +87,35 @@ Open QQ on your phone, find your bot, and send it a plain message. You will
 get a reply from Claude. That is it.
 
 For the full command list, see :doc:`commands`.
+
+Updating — 更新到最新版
+------------------------
+
+``setup.sh`` installs a global command ``ai-bridge-update`` into
+``~/.local/bin``. From **any directory**, update the project to the latest
+version of the ``custom`` branch:
+
+.. code-block:: bash
+
+   ai-bridge-update
+
+Update and then safely restart the QQ bridge (single instance only):
+
+.. code-block:: bash
+
+   ai-bridge-update --restart
+
+The updater uses ``git fetch origin custom`` plus a **fast-forward only** merge —
+it never runs ``git reset --hard``, so local edits to tracked files are never
+silently overwritten. If any tracked file has local modifications, the update
+stops and lists those files. Your ``.env`` is ignored by git and its content is
+verified unchanged before and after every update; the Python editable install of
+``claude-code-qq-bridge`` is refreshed and verified automatically.
+
+Alternative, from the project directory:
+
+.. code-block:: bash
+
+   cd ~/AI-Bridge-QQrobot-claude
+   ./update.sh            # update only
+   ./update.sh --restart  # update + safe restart

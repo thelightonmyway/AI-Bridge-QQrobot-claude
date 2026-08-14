@@ -193,6 +193,40 @@ claude-code-qq-bridge
 
 ---
 
+## 更新
+
+`setup.sh` 安装完成后，会自动在 `~/.local/bin` 安装全局命令 `ai-bridge-update`。
+以后**在任意目录**都能把项目更新到 `custom` 分支的最新版：
+
+```bash
+ai-bridge-update
+```
+
+更新完成后安全重启 QQ Bridge（保证只有单个实例）：
+
+```bash
+ai-bridge-update --restart
+```
+
+工作原理：
+
+- 更新采用 `git fetch origin custom` + **只允许快进（ff-only）合并**，绝不默认
+  `git reset --hard`，不会静默覆盖你自己的修改；
+- 检测到 tracked 文件有本地修改时，更新会**停止并列出这些文件**，而不是覆盖；
+- `.env`（QQ 凭据）受保护：已加入 `.gitignore`，每次更新前后都会校验内容完全一致；
+- 自动刷新 `claude-code-qq-bridge` 的 Python editable install，并验证
+  `import claude_code_qq_bridge` 与 `claude-code-qq-bridge` CLI 可用。
+
+备用方法（在项目目录内）：
+
+```bash
+cd ~/AI-Bridge-QQrobot-claude
+./update.sh            # 只更新
+./update.sh --restart  # 更新 + 安全重启
+```
+
+---
+
 ## 对比：AI-Bridge-QQrobot-claude vs. 其他方案
 
 ### vs. 普通 IM 桥（resume/replay 模式）

@@ -49,6 +49,43 @@ The ``start.sh`` script controls the bridge process:
 Logs are written to ``~/AI-Bridge-QQrobot-claude/logs/bridge.log``. The PID of the running
 bridge is recorded in ``~/AI-Bridge-QQrobot-claude/logs/bridge.pid``.
 
+Updating
+--------
+
+``setup.sh`` installs a global command ``ai-bridge-update`` into ``~/.local/bin``.
+From **any directory**, update to the latest version of the ``custom`` branch:
+
+.. code-block:: bash
+
+   ai-bridge-update
+
+Update and then safely restart the QQ bridge (single instance only):
+
+.. code-block:: bash
+
+   ai-bridge-update --restart
+
+Both are thin wrappers around ``~/AI-Bridge-QQrobot-claude/update.sh`` (arguments
+are passed through unchanged). The updater:
+
+* checks the project directory, the ``origin`` remote, and network availability;
+* refuses to proceed if any *tracked* file has local modifications — it lists the
+  files instead of overwriting them (never ``git reset --hard``);
+* fetches and fast-forwards with ``git merge --ff-only origin/custom``;
+* protects ``.env`` — it is in ``.gitignore`` and its content hash is verified
+  unchanged before and after the update;
+* refreshes the Python editable install of ``claude-code-qq-bridge`` and verifies
+  both ``import claude_code_qq_bridge`` and the ``claude-code-qq-bridge`` CLI;
+* records the old/new commit in ``logs/update.log``.
+
+Alternative, from the project directory:
+
+.. code-block:: bash
+
+   cd ~/AI-Bridge-QQrobot-claude
+   ./update.sh            # update only
+   ./update.sh --restart  # update + safe restart
+
 Verify the setup
 ----------------
 

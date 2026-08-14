@@ -58,6 +58,41 @@ Run it with no arguments to get a `.env` template you fill in by hand. Then star
 
 Send your bot a plain message from QQ — you will get a reply from Claude.
 
+## Updating
+
+`setup.sh` also installs a global command `ai-bridge-update` into `~/.local/bin`.
+From **any directory**, update the project to the latest version of the `custom`
+branch:
+
+```bash
+ai-bridge-update
+```
+
+Update and then safely restart the QQ bridge (single instance only):
+
+```bash
+ai-bridge-update --restart
+```
+
+How it works:
+
+* pulls with `git fetch origin custom` + a **fast-forward only** merge — it never
+  runs `git reset --hard`, so your own edits are never silently overwritten;
+* if any *tracked* file has local modifications, the update stops and lists those
+  files instead of overwriting them;
+* your `.env` (credentials) is protected — it is checked into `.gitignore` and its
+  content is verified unchanged before/after every update;
+* the Python editable install of `claude-code-qq-bridge` is refreshed and verified
+  (`import claude_code_qq_bridge` + the `claude-code-qq-bridge` CLI).
+
+Alternative (from the project directory):
+
+```bash
+cd ~/AI-Bridge-QQrobot-claude
+./update.sh            # update only
+./update.sh --restart  # update + safe restart
+```
+
 ## Documentation
 
 Full documentation: <https://agent-keep.readthedocs.io/en/latest/>
