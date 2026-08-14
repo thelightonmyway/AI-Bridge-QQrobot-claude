@@ -1,6 +1,6 @@
-# agent-keep — 项目规则（Claude 必读）
+# AI-Bridge-QQrobot-claude — 项目规则（Claude 必读）
 
-本文件是本仓库对 Claude Code 的长期约定。当用户要求修改 `agent-keep` 时，必须遵守以下流程。
+本文件是本仓库对 Claude Code 的长期约定。当用户要求修改 `AI-Bridge-QQrobot-claude` 时，必须遵守以下流程。
 
 ## 版本管理
 

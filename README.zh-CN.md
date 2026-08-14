@@ -1,8 +1,8 @@
-# Agent Keep 🏠
+# AI-Bridge-QQrobot-claude 🏠
 
 > 让你的 CLI Agent 24 小时在线。手机随时遥控。
 
-[![GitHub](https://img.shields.io/badge/Agent-Claude%20Code%20%7C%20Codex%20%7C%20AGY-blue)](https://github.com/zz327455573/agent-keep)
+[![GitHub](https://img.shields.io/badge/Agent-Claude%20Code%20%7C%20Codex%20%7C%20AGY-blue)](https://github.com/thelightonmyway/AI-Bridge-QQrobot-claude)
 [![平台](https://img.shields.io/badge/平台-Linux%20%7C%20Windows-green)]()
 [![通道](https://img.shields.io/badge/通道-QQ-orange)]()
 
@@ -20,7 +20,7 @@
 用户发消息 → 启动一个进程 → 发送 prompt → 拿到回复 → 杀掉进程
 ```
 
-**Agent Keep 不一样：**
+**AI-Bridge-QQrobot-claude 不一样：**
 
 ```
 Agent 常驻 tmux → 24 小时在线 → 手机发消息 →
@@ -30,7 +30,7 @@ Agent 做真实工作（文件、终端、浏览器、桌面）→
 
 **根本区别：**
 
-| 普通 IM 桥 | Agent Keep |
+| 普通 IM 桥 | AI-Bridge-QQrobot-claude |
 |:--|:--|
 | 每次请求新建 Agent 进程 | **Agent 在 tmux/ConPTY 里 24 小时常驻** |
 | 桥负责维护聊天历史 | **Agent 自己管理会话，天然连续** |
@@ -151,7 +151,7 @@ Agent 做真实工作（文件、终端、浏览器、桌面）→
 ### 个人使用
 你在服务器上跑着 Claude Code / Codex / AGY。每次 SSH 上去、敲命令、等结果。手机上看不了进度，断开连接上下文就丢了。
 
-**有了 Agent Keep：**
+**有了 AI-Bridge-QQrobot-claude：**
 - 打开 QQ → 发"帮我检查服务器" → 搞定 → 回复回来
 - 长时间任务？随时发消息，做完自动回
 - 新建会话？发 `/new`，桥自动重连
@@ -172,7 +172,7 @@ Agent 做真实工作（文件、终端、浏览器、桌面）→
 
 ```bash
 # 克隆总仓
-git clone https://github.com/zz327455573/agent-keep.git ~/AI-Bridge-QQrobot-claude
+git clone https://github.com/thelightonmyway/AI-Bridge-QQrobot-claude.git
 cd ~/AI-Bridge-QQrobot-claude
 
 # 选一个桥，从 packages 里安装：
@@ -193,7 +193,7 @@ claude-code-qq-bridge
 
 ---
 
-## 对比：Agent Keep vs. 其他方案
+## 对比：AI-Bridge-QQrobot-claude vs. 其他方案
 
 ### vs. 普通 IM 桥（resume/replay 模式）
 大多数桥每次收到消息就启动一个新 CLI 进程，把历史对话喂进去，回复完就杀掉。这意味着：
@@ -205,7 +205,7 @@ claude-code-qq-bridge
 API 方案的 Agent 被沙箱限制——不能碰你的文件、不能跑本地脚本、不能控制浏览器。
 
 ### vs. SSH + tmux 手动操作
-Agent Keep **就是** SSH + tmux，但自动化了。你不需要 SSH 上去、attach 会话、敲命令、看输出。桥帮你做完了所有事。
+AI-Bridge-QQrobot-claude **就是** SSH + tmux，但自动化了。你不需要 SSH 上去、attach 会话、敲命令、看输出。桥帮你做完了所有事。
 
 ---
 
@@ -215,7 +215,7 @@ Agent Keep **就是** SSH + tmux，但自动化了。你不需要 SSH 上去、a
 - [ ] **Telegram** 通道适配器
 - [ ] **飞书** 通道适配器
 - [ ] **Discord** 通道适配器
-- [ ] 统一 CLI：`agent-keep start claude`
+- [ ] 统一 CLI：`ai-bridge-qqrobot-claude start claude`
 - [ ] Web 控制面板：查看所有 Agent、会话日志
 - [ ] 多用户支持
 - [ ] Docker 部署
@@ -226,7 +226,7 @@ Agent Keep **就是** SSH + tmux，但自动化了。你不需要 SSH 上去、a
 
 CLI Agent 是我们拥有的最强大的 AI 工具。它们跑在我们的机器上，拥有所有权限，能做真正的工作。唯一缺少的是**持久化**——它们被锁在终端里，绑在 SSH 会话上。
 
-**Agent Keep 解决了这个问题。** 它给你的 Agent 一个永久的家，它们在那里生活、工作、等待你的指令。从任何地方。从你的手机。
+**AI-Bridge-QQrobot-claude 解决了这个问题。** 它给你的 Agent 一个永久的家，它们在那里生活、工作、等待你的指令。从任何地方。从你的手机。
 
 ---
 

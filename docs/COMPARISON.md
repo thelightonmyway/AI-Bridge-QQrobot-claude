@@ -1,8 +1,8 @@
-# Comparison: Agent Keep vs. Other Approaches
+# Comparison: AI-Bridge-QQrobot-claude vs. Other Approaches
 
 ## Detailed Comparison Table
 
-| Aspect | Agent Keep | Typical IM Bridge | API-based Agent | SSH + tmux (manual) |
+| Aspect | AI-Bridge-QQrobot-claude | Typical IM Bridge | API-based Agent | SSH + tmux (manual) |
 |--------|-----------|-------------------|-----------------|---------------------|
 | **Session persistence** | ✅ True persistent (tmux/ConPTY) | ❌ Ephemeral (per-request) | ❌ Ephemeral | ✅ Persistent |
 | **Context management** | ✅ Agent manages naturally | ❌ Bridge manages history | ❌ API manages | ✅ Agent manages |
@@ -15,11 +15,11 @@
 | **Setup complexity** | ⭐⭐ (pip install + .env) | ⭐⭐ (similar) | ⭐⭐⭐ (API keys) | ⭐ (SSH + tmux) |
 | **Production-ready** | ✅ Running for months | ❌ Mostly experimental | ✅ Enterprise-grade | ✅ Manual |
 
-## What Makes Agent Keep Different
+## What Makes AI-Bridge-QQrobot-claude Different
 
 ### 1. It's Not an IM Bridge — It's an Agent Gateway
 
-The term "IM bridge" is misleading. It suggests a simple protocol translator. Agent Keep is a **persistent agent gateway** that:
+The term "IM bridge" is misleading. It suggests a simple protocol translator. AI-Bridge-QQrobot-claude is a **persistent agent gateway** that:
 
 - Keeps agents alive 24/7 (not per-request)
 - Manages agent lifecycles (start, stop, restart, health check)
@@ -36,7 +36,7 @@ Most "IM + AI" projects use this pattern:
 
 This means every request is cold-start. The agent has no memory of previous interactions unless the bridge manually stitches together conversation history.
 
-Agent Keep uses this pattern:
+AI-Bridge-QQrobot-claude uses this pattern:
 
 ```
 [Agent lives in tmux/ConPTY 24/7]
@@ -47,7 +47,7 @@ The agent manages its own context. It remembers what it was doing. It has access
 
 ### 3. Multi-Platform, Multi-Agent
 
-Most projects target a single agent (usually Claude Code) on a single platform (Linux). Agent Keep covers:
+Most projects target a single agent (usually Claude Code) on a single platform (Linux). AI-Bridge-QQrobot-claude covers:
 
 **Agents:**
 - Claude Code (Linux)
@@ -85,7 +85,7 @@ Yes, it uses tmux. But so does every production deployment of Claude Code or Cod
 
 ### "Why not just use SSH?"
 
-SSH works if you're at your desk. Agent Keep is for when you're:
+SSH works if you're at your desk. AI-Bridge-QQrobot-claude is for when you're:
 - Away from your computer
 - Checking on long-running tasks
 - Wanting to quickly ask a question without opening a terminal
@@ -99,4 +99,4 @@ There are many IM bridges, but most are:
 - Resume-based (not truly persistent)
 - Experimental (not production-tested)
 
-Agent Keep's key differentiators are: **multi-agent, multi-platform, truly persistent, production-proven.**
+AI-Bridge-QQrobot-claude's key differentiators are: **multi-agent, multi-platform, truly persistent, production-proven.**

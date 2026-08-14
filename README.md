@@ -1,8 +1,8 @@
-# Agent Keep
+# AI-Bridge-QQrobot-claude
 
 > Remote-control your Claude Code agent from QQ on your phone.
 
-**Agent Keep** is a bridge between **Claude Code** and **QQ**. A Claude Code session
+**AI-Bridge-QQrobot-claude** is a bridge between **Claude Code** and **QQ**. A Claude Code session
 stays alive on your machine 24/7; you talk to it from QQ — start long tasks, check on
 them, send files, and approve actions, all from your phone.
 
@@ -42,14 +42,14 @@ the original author for sharing their work.
 ## Quick Start
 
 ```bash
-git clone https://github.com/thelightonmyway/AI-Bridge-QQrobot-claude.git ~/AI-Bridge-QQrobot-claude
-cd ~/AI-Bridge-QQrobot-claude
-./setup.sh
+git clone https://github.com/thelightonmyway/AI-Bridge-QQrobot-claude.git
+cd AI-Bridge-QQrobot-claude
+./setup.sh <APP_ID> <CLIENT_SECRET>
 ```
 
 `setup.sh` checks your dependencies, installs the `claude-code-qq-bridge` package,
-and creates a `~/AI-Bridge-QQrobot-claude/.env` template. Fill in your QQ bot `APP_ID` and
-`CLIENT_SECRET`, then start the bridge:
+and writes your QQ bot `APP_ID` and `CLIENT_SECRET` into `~/AI-Bridge-QQrobot-claude/.env`.
+Run it with no arguments to get a `.env` template you fill in by hand. Then start the bridge:
 
 ```bash
 ./start.sh start

@@ -1,7 +1,7 @@
 Installation
 ============
 
-This page is a reference for setting up Agent Keep. If you are starting from
+This page is a reference for setting up AI-Bridge-QQrobot-claude. If you are starting from
 scratch, follow :doc:`quickstart` — the setup script automates most of it.
 
 Prerequisites

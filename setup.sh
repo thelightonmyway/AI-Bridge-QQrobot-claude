@@ -12,7 +12,8 @@
 #
 # 运行方式：
 #   chmod +x setup.sh
-#   ./setup.sh
+#   ./setup.sh                          # 创建 .env 模板，再手动填凭据
+#   ./setup.sh <APP_ID> <CLIENT_SECRET> # 直接写入 QQ 机器人凭据
 #
 # 本项目基于 zz327455573/agent-keep 重开发（致谢原作者，详见 README），
 # 但作为独立维护版本发布，安装直接取自本仓库（thelightonmyway/AI-Bridge-QQrobot-claude）。
@@ -119,12 +120,8 @@ cd "${REPO_DIR}"
 # ── 5. 创建 .env 配置文件 ────────────────────────────────────────────────────
 ENV_FILE="${REPO_DIR}/.env"
 
-if [ -f "${ENV_FILE}" ] && grep -qv "YOUR_QQ_BOT" "${ENV_FILE}" 2>/dev/null; then
-    info ".env 已配置，保留现有文件"
-elif [ -f "${ENV_FILE}" ]; then
-    info ".env 存在但未填写真实凭据，保留"
-else
-    info "创建 .env 配置模板..."
+# 无参数时的默认配置模板
+create_env_template() {
     cat > "${ENV_FILE}" << 'ENVEOF'
 # ==========================================
 # Claude Code QQ Bridge 配置文件
@@ -140,6 +137,37 @@ MASTER_OPENID=
 # 绑定的 tmux 会话号（默认为 1）
 TMUX_SESSION=1
 ENVEOF
+}
+
+if [ $# -ge 2 ]; then
+    # ./setup.sh <APP_ID> <CLIENT_SECRET> 直接写入凭据
+    info "写入 .env（来自命令行参数）..."
+    cat > "${ENV_FILE}" << EOF
+# ==========================================
+# Claude Code QQ Bridge 配置文件
+# ==========================================
+
+# QQ Bot 官方平台 AppID 与 ClientSecret（由 setup.sh 参数写入）
+APP_ID=${1}
+CLIENT_SECRET=${2}
+
+# Master 用户的 OpenID（留空则自动绑定第一个发消息的用户）
+MASTER_OPENID=
+
+# 绑定的 tmux 会话号（默认为 1）
+TMUX_SESSION=1
+EOF
+    ok ".env 已写入凭据（APP_ID=${1}）"
+elif [ $# -eq 1 ]; then
+    warn "用法：./setup.sh <APP_ID> <CLIENT_SECRET>（需两个参数），改用模板流程。"
+    create_env_template
+elif [ -f "${ENV_FILE}" ] && grep -qv "YOUR_QQ_BOT" "${ENV_FILE}" 2>/dev/null; then
+    info ".env 已配置，保留现有文件"
+elif [ -f "${ENV_FILE}" ]; then
+    info ".env 存在但未填写真实凭据，保留"
+else
+    info "创建 .env 配置模板..."
+    create_env_template
     ok ".env 模板已创建"
 fi
 
@@ -159,8 +187,8 @@ echo "  └─ claude 版本   : $(claude --version 2>&1 | head -1)"
 echo ""
 echo "  📋 接下来你需要做的："
 echo ""
-echo "  1. 编辑 .env 填入 QQ 机器人凭据："
-echo "     nano ${REPO_DIR}/.env"
+echo "  1. 如果还没配置 QQ 机器人凭据，编辑 .env："
+echo "     nano ${REPO_DIR}/.env      # 或用 ./setup.sh <APP_ID> <CLIENT_SECRET> 重新写入"
 echo ""
 echo "  2. 启动桥接："
 echo "     cd ${REPO_DIR} && ./start.sh start"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""agent-keep release tool — single source of truth for versioning.
+"""AI-Bridge-QQrobot-claude release tool — single source of truth for versioning.
 
 Usage:
     python3 scripts/release.py patch    # 0.1.0 -> 0.1.1

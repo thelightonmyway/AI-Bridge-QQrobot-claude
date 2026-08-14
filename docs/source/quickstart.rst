@@ -28,42 +28,47 @@ choice and make sure Claude Code can respond normally.
 
 These are all the prerequisites — the setup script handles everything else.
 
-Step 2 — Clone Agent Keep
--------------------------
+Step 2 — Clone AI-Bridge-QQrobot-claude
+---------------------------------------
 
 .. code-block:: bash
 
-   git clone https://github.com/thelightonmyway/AI-Bridge-QQrobot-claude.git ~/AI-Bridge-QQrobot-claude
-   cd ~/AI-Bridge-QQrobot-claude
+   git clone https://github.com/thelightonmyway/AI-Bridge-QQrobot-claude.git
+   cd AI-Bridge-QQrobot-claude
 
-Step 3 — Run the setup script
------------------------------
+Step 3 — Run the setup script (pass your credentials)
+-----------------------------------------------------
 
-Run the one-click setup script:
+Run the one-click setup script with your QQ bot credentials:
 
 .. code-block:: bash
 
-   ./setup.sh
+   ./setup.sh <APP_ID> <CLIENT_SECRET>
 
 The script automatically:
 
 * checks that all dependencies are installed;
 * detects your ``HOME`` and Claude projects directory;
 * fetches the latest code (``git pull`` if ``~/AI-Bridge-QQrobot-claude`` already exists);
-* patches hard-coded paths in the source to match your user;
 * installs the ``claude-code-qq-bridge`` package;
-* creates a ``~/AI-Bridge-QQrobot-claude/.env`` configuration template.
+* writes your ``APP_ID`` / ``CLIENT_SECRET`` into ``~/AI-Bridge-QQrobot-claude/.env``.
 
-Step 4 — Fill in your credentials
----------------------------------
+If you prefer not to put credentials on the command line, run ``./setup.sh``
+with no arguments — it creates a ``.env`` template you fill in by hand.
 
-Edit ``~/AI-Bridge-QQrobot-claude/.env`` and set your QQ bot credentials — the one step the
-script cannot do for you:
+Step 4 — Optional: adjust configuration
+---------------------------------------
+
+Your credentials are already in ``~/AI-Bridge-QQrobot-claude/.env``. Open it
+if you want to set optional values such as ``MASTER_OPENID`` (limit control to
+one user) or ``TMUX_SESSION``:
 
 .. code-block:: ini
 
-   APP_ID=YOUR_QQ_BOT_APP_ID
-   CLIENT_SECRET=YOUR_QQ_BOT_CLIENT_SECRET
+   APP_ID=<your-app-id>
+   CLIENT_SECRET=<your-client-secret>
+   MASTER_OPENID=
+   TMUX_SESSION=1
 
 Step 5 — Start the bridge
 -------------------------

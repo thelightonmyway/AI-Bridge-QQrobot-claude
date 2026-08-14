@@ -1,20 +1,20 @@
 .. meta::
    :description: A persistent QQ bot bridge for Claude Code and other terminal CLI agents.
 
-Agent Keep
-==========
+AI-Bridge-QQrobot-claude
+========================
 
-**Agent Keep** is a bridge between Claude Code and QQ. It lets you talk to
+**AI-Bridge-QQrobot-claude** is a bridge between Claude Code and QQ. It lets you talk to
 Claude Code directly from QQ on your phone, wherever you are.
 
 .. note::
 
    **Acknowledgement**
 
-   The initial development of Agent Keep was inspired in part by ideas and
+   The initial development of AI-Bridge-QQrobot-claude was inspired in part by ideas and
    implementations from `zz327455573/agent-keep <https://github.com/zz327455573/agent-keep>`_.
    Many thanks to the original author for sharing their work and contributing
-   to the community. Agent Keep is now maintained independently.
+   to the community. AI-Bridge-QQrobot-claude is now maintained independently.
 
 What can it do?
 ---------------
@@ -47,7 +47,7 @@ Table of contents
 
 .. toctree::
    :maxdepth: 2
-   :caption: Using Agent Keep
+   :caption: Using AI-Bridge-QQrobot-claude
 
    commands
    session-management

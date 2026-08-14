@@ -1,6 +1,6 @@
 # Monorepo Layout
 
-`agent-keep` is now a code-bearing monorepo.
+`AI-Bridge-QQrobot-claude` is now a code-bearing monorepo.
 
 ## Packages
 
@@ -24,5 +24,5 @@ pip install ./packages/agy-qq-bridge
 
 - The top-level repo is now a real source repository, not docs-only.
 - Each bridge can still evolve independently.
-- The top-level project preserves the `Agent Keep` umbrella positioning while exposing runnable code.
+- The top-level project preserves the `AI-Bridge-QQrobot-claude` umbrella positioning while exposing runnable code.
 

@@ -18,7 +18,7 @@ except FileNotFoundError:
 release = version
 
 # -- Project information -----------------------------------------------------
-project = "agent-keep"
+project = "AI-Bridge-QQrobot-claude"
 author = "xuyang"
 copyright = "2026, xuyang"
 
