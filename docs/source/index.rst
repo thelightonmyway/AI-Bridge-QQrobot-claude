@@ -4,31 +4,36 @@
 Agent Keep
 ==========
 
-**Agent Keep** is a persistent CLI agent gateway monorepo. It connects
-terminal-based agents — Claude Code, Codex, AGY, and similar — to QQ instant
-messaging, so you can chat with Claude Code directly from QQ on your phone.
+**Agent Keep** is a bridge between Claude Code and QQ. It lets you talk to
+Claude Code directly from QQ on your phone, wherever you are.
 
 .. note::
 
-   This documentation covers the **claude-code-qq-bridge** package, which
-   connects Claude Code to QQ. The repository also contains two sibling
-   packages, ``codex-qq-bridge`` and ``agy-qq-bridge``, with a similar
-   structure.
+   **Acknowledgement**
 
-Architecture at a glance
-------------------------
+   The initial development of Agent Keep was inspired in part by ideas and
+   implementations from `zz327455573/agent-keep <https://github.com/zz327455573/agent-keep>`_.
+   Many thanks to the original author for sharing their work and contributing
+   to the community. Agent Keep is now maintained independently.
 
-.. code-block:: text
+What can it do?
+---------------
 
-    Phone QQ ──> QQ bot WebSocket ──> bridge ──> tmux send-keys ──> Claude Code (interactive)
-                                           ↑                             ↓
-                                           └──── session / JSONL ────────→ replies pushed to QQ
+* **Chat with Claude Code from QQ** — send a message to your bot and get a
+  reply from Claude, right in QQ on your phone.
+* **Keep conversations alive** — if Claude exits or crashes, the bridge
+  restores the session automatically.
+* **Send images and files** from the bridge host to Claude.
+* **Approve requests from QQ** — respond to Claude's permission prompts with
+  a button tap.
 
-A message sent from QQ is forwarded to Claude Code running inside a tmux
-session. The reply is captured by the bridge and pushed back to QQ. If the
-process crashes or exits unexpectedly, the bridge automatically resumes the
-session with ``--resume`` and re-binds the new PID, so the conversation is
-never lost.
+How do I get started?
+---------------------
+
+The fastest way is the one-click setup script. It checks your dependencies,
+fetches the code, installs the bridge, and prepares your configuration.
+
+Ready to start? See :doc:`quickstart`.
 
 Table of contents
 -----------------
@@ -42,21 +47,20 @@ Table of contents
 
 .. toctree::
    :maxdepth: 2
-   :caption: Usage
+   :caption: Using Agent Keep
 
-   usage
    commands
-   architecture
+   session-management
+   usage
 
 .. toctree::
-   :maxdepth: 2
+   :maxdepth: 1
+   :caption: Troubleshooting
+
+   troubleshooting
+
+.. toctree::
+   :maxdepth: 1
    :caption: Reference
 
-   api
    changelog
-   release
-
-Version
--------
-
-Current version: **v\ |version|**

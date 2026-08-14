@@ -1,91 +1,60 @@
 Installation
 ============
 
-This page is for users who already have the repository and want to run the
-bridge on their own machine. For a one-click setup from scratch, see
-:doc:`quickstart`.
+This page is a reference for setting up Agent Keep. If you are starting from
+scratch, follow :doc:`quickstart` — the setup script automates most of it.
 
 Prerequisites
 -------------
 
-* Python ≥ 3.10 (a virtual environment with ``aiohttp`` is recommended)
-* ``tmux``, ``git``, and the ``claude`` CLI (Claude Code)
-* A QQ bot registered on the QQ Open Platform, with ``APP_ID`` and
-  ``CLIENT_SECRET`` credentials
+* Python 3.10 or newer, with ``pip``
+* ``tmux`` and ``git``
+* the ``claude`` CLI (Claude Code)
+* a QQ bot on the QQ Open Platform, with ``APP_ID`` and ``CLIENT_SECRET``
 
-Environment variables
----------------------
+Configuration
+-------------
 
-The bridge reads its configuration from a ``.env`` file. The first existing
-file wins, in this order:
-
-1. ``.env`` in the current working directory
-2. ``packages/claude-code-qq-bridge/.env``
-3. ``~/agent-keep/.env``
-
-Required keys:
+All configuration lives in ``~/agent-keep/.env``:
 
 .. code-block:: ini
 
    APP_ID=YOUR_QQ_BOT_APP_ID
    CLIENT_SECRET=YOUR_QQ_BOT_CLIENT_SECRET
-   # Master user OpenID (leave empty to auto-bind the first user who sends a message)
    MASTER_OPENID=
-   # Bound tmux session number (default: 1)
    TMUX_SESSION=1
 
-Start the bridge
+* ``APP_ID`` / ``CLIENT_SECRET`` — your QQ bot credentials (required).
+* ``MASTER_OPENID`` — the OpenID of the user allowed to control the bridge.
+  Leave empty to auto-bind the first user who sends a message.
+* ``TMUX_SESSION`` — the tmux session number the bridge attaches to
+  (default: ``1``).
+
+The bridge also looks for a ``.env`` file in the current working directory
+and inside ``packages/claude-code-qq-bridge/``, but ``~/agent-keep/.env`` is
+the canonical location.
+
+Managing the bridge
+-------------------
+
+The ``start.sh`` script controls the bridge process:
+
+.. code-block:: bash
+
+   ./start.sh start      # start the bridge in the background
+   ./start.sh status     # show whether it is running
+   ./start.sh restart    # restart it
+   ./start.sh stop       # stop it
+
+Logs are written to ``~/agent-keep/logs/bridge.log``. The PID of the running
+bridge is recorded in ``~/agent-keep/logs/bridge.pid``.
+
+Verify the setup
 ----------------
 
-The recommended way is to manage the bridge with ``start.sh`` (logs are
-collected in ``~/agent-keep/logs/bridge.log``):
+Send your bot a plain message from QQ. If you receive a reply from Claude,
+everything is working. You can also confirm the process is alive:
 
 .. code-block:: bash
 
-   # Start
-   ./start.sh start
-
-   # Show status
    ./start.sh status
-
-   # Restart
-   ./start.sh restart
-
-   # Stop
-   ./start.sh stop
-
-``start.sh`` runs the bridge in the background and records its PID in
-``logs/bridge.pid``.
-
-Logs
-----
-
-All logs are written to ``~/agent-keep/logs/bridge.log``:
-
-.. code-block:: bash
-
-   tail -f ~/agent-keep/logs/bridge.log
-
-Run manually (debugging)
-------------------------
-
-.. code-block:: bash
-
-   cd ~/agent-keep/packages/claude-code-qq-bridge
-   pip install -e .
-   claude-code-qq-bridge
-
-Or without installing:
-
-.. code-block:: bash
-
-   python3 -c "import sys; sys.path.insert(0, 'packages/claude-code-qq-bridge/src'); from claude_code_qq_bridge.bridge import cli; import sys; sys.exit(cli())"
-
-Verification
-------------
-
-* ``./start.sh status`` prints ``Bridge running: pid N``;
-* send a plain message to the bot from QQ on your phone — you should receive
-  a reply from Claude;
-* ``tail -f ~/agent-keep/logs/bridge.log`` shows lines such as ``[Recv]`` and
-  ``[QQ -> Claude]``.
