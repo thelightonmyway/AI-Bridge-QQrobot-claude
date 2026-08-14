@@ -4,12 +4,12 @@ Troubleshooting
 Check the log first
 -------------------
 
-All bridge logs are written to ``~/agent-keep/logs/bridge.log``. Most issues
+All bridge logs are written to ``~/AI-Bridge-QQrobot-claude/logs/bridge.log``. Most issues
 are visible in the log:
 
 .. code-block:: bash
 
-   tail -f ~/agent-keep/logs/bridge.log
+   tail -f ~/AI-Bridge-QQrobot-claude/logs/bridge.log
 
 Bridge does not start
 ---------------------
@@ -31,12 +31,12 @@ QQ bot does not respond
 -----------------------
 
 * Make sure the bridge is running: ``./start.sh status``.
-* Check that ``APP_ID`` and ``CLIENT_SECRET`` in ``~/agent-keep/.env`` are
+* Check that ``APP_ID`` and ``CLIENT_SECRET`` in ``~/AI-Bridge-QQrobot-claude/.env`` are
   correct.
 * Confirm the bot has been approved and enabled for C2C messaging on the QQ
   Open Platform.
 * Watch the log while you send a message:
-  ``tail -f ~/agent-keep/logs/bridge.log``.
+  ``tail -f ~/AI-Bridge-QQrobot-claude/logs/bridge.log``.
 
 ``command -v claude`` fails
 ---------------------------

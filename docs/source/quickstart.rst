@@ -33,8 +33,8 @@ Step 2 — Clone Agent Keep
 
 .. code-block:: bash
 
-   git clone https://github.com/thelightonmyway/agent-keep.git ~/agent-keep
-   cd ~/agent-keep
+   git clone https://github.com/thelightonmyway/agent-keep.git ~/AI-Bridge-QQrobot-claude
+   cd ~/AI-Bridge-QQrobot-claude
 
 Step 3 — Run the setup script
 -----------------------------
@@ -49,15 +49,15 @@ The script automatically:
 
 * checks that all dependencies are installed;
 * detects your ``HOME`` and Claude projects directory;
-* fetches the latest code (``git pull`` if ``~/agent-keep`` already exists);
+* fetches the latest code (``git pull`` if ``~/AI-Bridge-QQrobot-claude`` already exists);
 * patches hard-coded paths in the source to match your user;
 * installs the ``claude-code-qq-bridge`` package;
-* creates a ``~/agent-keep/.env`` configuration template.
+* creates a ``~/AI-Bridge-QQrobot-claude/.env`` configuration template.
 
 Step 4 — Fill in your credentials
 ---------------------------------
 
-Edit ``~/agent-keep/.env`` and set your QQ bot credentials — the one step the
+Edit ``~/AI-Bridge-QQrobot-claude/.env`` and set your QQ bot credentials — the one step the
 script cannot do for you:
 
 .. code-block:: ini

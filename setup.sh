@@ -59,7 +59,7 @@ ok "依赖检查通过"
 # ── 2. 自动检测路径 ─────────────────────────────────────────────────────────
 HOME_DIR="${HOME}"
 CLAUDE_PROJECT="-$(echo "${HOME_DIR}" | sed 's|^/||' | tr '/' '-')"
-AGENT_KEEP_DIR="${HOME_DIR}/agent-keep"
+AGENT_KEEP_DIR="${HOME_DIR}/AI-Bridge-QQrobot-claude"
 
 info "HOME         = ${HOME_DIR}"
 info "Claude项目名  = ${CLAUDE_PROJECT}"
@@ -108,8 +108,8 @@ patch_file() {
         # 2. cd /root → cd $HOME
         sed -i "s|cd /root &&|cd ${HOME_DIR} &&|g" "${file}"
 
-        # 3. /root/claude-code-qq-bridge/.env → $HOME/agent-keep/.env
-        sed -i "s|/root/claude-code-qq-bridge/.env|${HOME_DIR}/agent-keep/.env|g" "${file}"
+        # 3. /root/claude-code-qq-bridge/.env → $HOME/AI-Bridge-QQrobot-claude/.env
+        sed -i "s|/root/claude-code-qq-bridge/.env|${HOME_DIR}/AI-Bridge-QQrobot-claude/.env|g" "${file}"
     else
         info "  跳过（已修补）: ${file}"
     fi
@@ -119,7 +119,7 @@ patch_file() {
 patch_file "${SRC_BRIDGE}"
 
 # 额外处理 bridge.py：load_env 和 _save_master_openid 的 PermissionError 保护
-if grep -q "Path.home() / \"agent-keep\" / \".env\"" "${SRC_BRIDGE}" 2>/dev/null; then
+if grep -q "Path.home() / \"AI-Bridge-QQrobot-claude\" / \".env\"" "${SRC_BRIDGE}" 2>/dev/null; then
     info "  bridge.py PermissionError 保护已就绪"
 else
     info "  添加 bridge.py PermissionError 保护..."
@@ -144,7 +144,7 @@ old_load_env = '''    candidates = [
 new_load_env = '''    candidates = [
         Path(".env"),
         Path(__file__).parent / ".env",
-        Path.home() / "agent-keep" / ".env",
+        Path.home() / "AI-Bridge-QQrobot-claude" / ".env",
     ]
     for p in candidates:
         try:
@@ -164,8 +164,8 @@ def replace_second(match):
     count += 1
     if count == 2:
         return new_load_env.replace(
-            'Path.home() / "agent-keep" / ".env"',
-            'Path.home() / "agent-keep" / ".env"'
+            'Path.home() / "AI-Bridge-QQrobot-claude" / ".env"',
+            'Path.home() / "AI-Bridge-QQrobot-claude" / ".env"'
         )
     return match.group(0)
 
@@ -189,7 +189,7 @@ if len(parts) == 2:
     after_save_replaced = after_save.replace(old_save, new_save := '''    candidates = [
         Path(".env"),
         Path(__file__).parent / ".env",
-        Path.home() / "agent-keep" / ".env",
+        Path.home() / "AI-Bridge-QQrobot-claude" / ".env",
     ]
     for p in candidates:
         try:

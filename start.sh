@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Claude Code QQ Bridge 统一启动/停止脚本
 #
-# 日志统一到 ~/agent-keep/logs/bridge.log：
+# 日志统一到 ~/AI-Bridge-QQrobot-claude/logs/bridge.log：
 #   - 程序内 logging -> FileHandler 直接写 bridge.log
 #   - stdout/stderr 也一并重定向到 bridge.log（兜底捕获 print / traceback）
 # 不再出现"程序以为写在 bridge.log，实际却在 nohup.out"的混乱。
 set -u
 
-REPO="${HOME}/agent-keep"
-LOG_DIR="${BRIDGE_LOG_DIR:-${HOME}/agent-keep/logs}"
+REPO="${HOME}/AI-Bridge-QQrobot-claude"
+LOG_DIR="${BRIDGE_LOG_DIR:-${HOME}/AI-Bridge-QQrobot-claude/logs}"
 LOG_FILE="${LOG_DIR}/bridge.log"
 PIDFILE="${LOG_DIR}/bridge.pid"
 

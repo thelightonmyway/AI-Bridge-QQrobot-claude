@@ -47,7 +47,7 @@
 ## 本地预览文档
 
 ```bash
-cd ~/agent-keep
+cd ~/AI-Bridge-QQrobot-claude
 python3 -m venv /tmp/docs-venv && /tmp/docs-venv/bin/pip install -r docs/requirements.txt
 /tmp/docs-venv/bin/python3 -m sphinx -b html docs/source docs/_build/html
 ```

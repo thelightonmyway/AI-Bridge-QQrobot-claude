@@ -37,7 +37,7 @@ def load_env():
     candidates = [
         Path(".env"),
         Path(__file__).parent / ".env",
-        Path.home() / "agent-keep" / ".env",
+        Path.home() / "AI-Bridge-QQrobot-claude" / ".env",
     ]
     for p in candidates:
         try:
@@ -179,12 +179,12 @@ CONNECT_TIMEOUT = 20
 RECONNECT_BACKOFF = [2, 5, 10, 30, 60]
 HEARTBEAT_INTERVAL = 15.0
 
-# === 日志：固定到 ~/agent-keep/logs/bridge.log（绝对路径，与启动 CWD/重定向无关）===
+# === 日志：固定到 ~/AI-Bridge-QQrobot-claude/logs/bridge.log（绝对路径，与启动 CWD/重定向无关）===
 # 只使用 FileHandler：避免 stdout 重定向与文件重复写两份、以及
 # "程序以为写在 bridge.log，实际却跑到 nohup.out" 的混乱。
 # stdout/stderr 由 start.sh 一并重定向到 bridge.log，兜底捕获未走 logging 的
 # print / traceback；所有结构化日志则统一进 bridge.log。
-LOG_DIR = Path(os.environ.get("BRIDGE_LOG_DIR", str(Path.home() / "agent-keep" / "logs")))
+LOG_DIR = Path(os.environ.get("BRIDGE_LOG_DIR", str(Path.home() / "AI-Bridge-QQrobot-claude" / "logs")))
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 BRIDGE_LOG_FILE = LOG_DIR / "bridge.log"
 logging.basicConfig(
@@ -1763,7 +1763,7 @@ def _save_master_openid(openid: str):
     candidates = [
         Path(".env"),
         Path(__file__).parent / ".env",
-        Path.home() / "agent-keep" / ".env",
+        Path.home() / "AI-Bridge-QQrobot-claude" / ".env",
     ]
     for p in candidates:
         try:

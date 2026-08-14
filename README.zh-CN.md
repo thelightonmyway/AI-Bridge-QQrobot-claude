@@ -172,8 +172,8 @@ Agent 做真实工作（文件、终端、浏览器、桌面）→
 
 ```bash
 # 克隆总仓
-git clone https://github.com/zz327455573/agent-keep.git
-cd agent-keep
+git clone https://github.com/zz327455573/agent-keep.git ~/AI-Bridge-QQrobot-claude
+cd ~/AI-Bridge-QQrobot-claude
 
 # 选一个桥，从 packages 里安装：
 pip install ./packages/claude-code-qq-bridge

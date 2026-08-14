@@ -42,13 +42,13 @@ the original author for sharing their work.
 ## Quick Start
 
 ```bash
-git clone https://github.com/thelightonmyway/agent-keep.git ~/agent-keep
-cd ~/agent-keep
+git clone https://github.com/thelightonmyway/agent-keep.git ~/AI-Bridge-QQrobot-claude
+cd ~/AI-Bridge-QQrobot-claude
 ./setup.sh
 ```
 
 `setup.sh` checks your dependencies, installs the `claude-code-qq-bridge` package,
-and creates a `~/agent-keep/.env` template. Fill in your QQ bot `APP_ID` and
+and creates a `~/AI-Bridge-QQrobot-claude/.env` template. Fill in your QQ bot `APP_ID` and
 `CLIENT_SECRET`, then start the bridge:
 
 ```bash

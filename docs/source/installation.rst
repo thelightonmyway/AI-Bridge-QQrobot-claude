@@ -15,7 +15,7 @@ Prerequisites
 Configuration
 -------------
 
-All configuration lives in ``~/agent-keep/.env``:
+All configuration lives in ``~/AI-Bridge-QQrobot-claude/.env``:
 
 .. code-block:: ini
 
@@ -31,7 +31,7 @@ All configuration lives in ``~/agent-keep/.env``:
   (default: ``1``).
 
 The bridge also looks for a ``.env`` file in the current working directory
-and inside ``packages/claude-code-qq-bridge/``, but ``~/agent-keep/.env`` is
+and inside ``packages/claude-code-qq-bridge/``, but ``~/AI-Bridge-QQrobot-claude/.env`` is
 the canonical location.
 
 Managing the bridge
@@ -46,8 +46,8 @@ The ``start.sh`` script controls the bridge process:
    ./start.sh restart    # restart it
    ./start.sh stop       # stop it
 
-Logs are written to ``~/agent-keep/logs/bridge.log``. The PID of the running
-bridge is recorded in ``~/agent-keep/logs/bridge.pid``.
+Logs are written to ``~/AI-Bridge-QQrobot-claude/logs/bridge.log``. The PID of the running
+bridge is recorded in ``~/AI-Bridge-QQrobot-claude/logs/bridge.pid``.
 
 Verify the setup
 ----------------
