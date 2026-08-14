@@ -16,11 +16,15 @@ Make sure the following are in place:
   ``CLIENT_SECRET`` at hand
 
 If Claude Code is missing, install it with the official native installer
-(for Linux / WSL):
+(for Linux / WSL) and verify it:
 
 .. code-block:: bash
 
    curl -fsSL https://claude.ai/install.sh | bash
+   claude --version
+
+Before continuing, configure Claude Code with an AI model provider of your
+choice and make sure Claude Code can respond normally.
 
 These are all the prerequisites — the setup script handles everything else.
 
