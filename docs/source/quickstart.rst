@@ -8,20 +8,21 @@ need to do is run it and fill in two credentials.
 Step 1 — Prerequisites
 ----------------------
 
-You need a machine with the following installed:
+Make sure the following are in place:
 
-* ``python3`` and ``pip``
-* ``tmux``
-* ``git``
-* the ``claude`` CLI (Claude Code)
+* ``python3`` / ``pip``, ``tmux``, and ``git``
+* Claude Code installed and working
+* a QQ bot created on the QQ Open Platform, with its ``APP_ID`` and
+  ``CLIENT_SECRET`` at hand
+
+If Claude Code is missing, install it with the official native installer
+(for Linux / WSL):
 
 .. code-block:: bash
 
-   sudo apt install -y python3 python3-pip tmux git
-   npm install -g @anthropic-ai/claude-code
+   curl -fsSL https://claude.ai/install.sh | bash
 
-You also need a QQ bot on the QQ Open Platform (https://q.qq.com), together
-with its ``APP_ID`` and ``CLIENT_SECRET`` credentials.
+These are all the prerequisites — the setup script handles everything else.
 
 Step 2 — Clone Agent Keep
 -------------------------
