@@ -50,6 +50,9 @@ extensions = [
 templates_path = ["_templates"]
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
+# The documentation is written in English.
+language = "en"
+
 # autosummary generates one stub page per documented object.
 autosummary_generate = True
 

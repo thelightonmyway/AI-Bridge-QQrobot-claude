@@ -1,24 +1,30 @@
-发布流程
-========
+Release Process
+===============
 
-从 v0.1.0 起，所有正式版本都由 :file:`scripts/release.py` 统一管理，
-**不需要手工修改** 版本号 / CHANGELOG / tag / 文档版本。
+Since v0.1.0, every official release is managed by
+:file:`scripts/release.py` — you do not need to edit the version number,
+CHANGELOG, tags, or documentation version by hand.
 
-单一版本号来源
---------------
+Single source of truth for the version
+--------------------------------------
 
-仓库根目录的 :file:`VERSION` 文件是唯一版本号来源：:
+The :file:`VERSION` file at the repository root is the single source of truth
+for the version number:
 
-    echo "0.1.0" > VERSION
+.. code-block:: bash
 
-以下位置都从它取值：
+   echo "0.1.0" > VERSION
 
-* Sphinx 文档（:file:`docs/source/conf.py` 读取 :file:`VERSION`）
-* release 脚本（:file:`scripts/release.py` 读写 :file:`VERSION`）
-* 文档顶部显示的版本号
+It is read from:
 
-执行发布
---------
+* The Sphinx documentation (:file:`docs/source/conf.py` reads
+  :file:`VERSION`);
+* The release script (:file:`scripts/release.py` reads and writes
+  :file:`VERSION`);
+* The version displayed at the top of the documentation.
+
+Running a release
+-----------------
 
 .. code-block:: bash
 
@@ -26,52 +32,57 @@
    python3 scripts/release.py minor   # 0.1.1 → 0.2.0
    python3 scripts/release.py major   # 0.2.0 → 1.0.0
 
-脚本会依次：
+The script will, in order:
 
-1. 检查 Git working tree 是否干净（有未提交修改则中止）；
-2. 读取上一个 Git tag，得到从上一版本以来的 commit/diff；
-3. 按 ``patch / minor / major`` 规则推进 :file:`VERSION`；
-4. 把 :file:`CHANGELOG.md` 中 ``[Unreleased]`` 条目转成正式版本条目；
-5. 运行测试（存在 ``pytest`` / 测试目录时）；
-6. 本地构建一次 Sphinx 文档，确认无错误；
-7. 创建 Git commit（含 VERSION / CHANGELOG / 文档改动）；
-8. 打 Git tag（如 ``v0.1.1``）。
+1. Check that the Git working tree is clean (aborts if there are uncommitted
+   changes);
+2. Read the previous Git tag and collect the commits / diff since the last
+   release;
+3. Bump :file:`VERSION` according to the ``patch / minor / major`` rule;
+4. Promote the ``[Unreleased]`` entries in :file:`CHANGELOG.md` to a
+   versioned section;
+5. Run the tests (when ``pytest`` / a test directory exists);
+6. Build the Sphinx documentation once locally to confirm there are no
+   errors;
+7. Create a Git commit (including VERSION / CHANGELOG / documentation
+   changes);
+8. Create a Git tag (for example ``v0.1.1``).
 
-**脚本不会自动 push**。结束后会提示：
+**The script never pushes automatically.** When it finishes it prompts:
 
 .. code-block:: text
 
    Release v0.1.1 ready.
    Push to remote?
 
-只有在确认要发布后才手动 push。
+Push manually only after you have confirmed you want to publish.
 
-版本号规则
-----------
+Version numbering
+-----------------
 
 .. list-table::
    :header-rows: 1
    :widths: 15 25 60
 
-   * - 命令
-     - 示例
-     - 何时使用
+   * - Command
+     - Example
+     - When to use
    * - ``patch``
      - ``0.1.0 → 0.1.1``
-     - Bug 修复、小改动
+     - Bug fixes and small changes
    * - ``minor``
      - ``0.1.1 → 0.2.0``
-     - 新增功能（向后兼容）
+     - New features (backwards compatible)
    * - ``major``
      - ``0.2.0 → 1.0.0``
-     - 破坏性变更 / 里程碑
+     - Breaking changes / milestones
 
-恢复上一个稳定版本
-------------------
+Recovering the previous stable version
+--------------------------------------
 
-每个版本都有 Git tag，随时可回滚：
+Every version has a Git tag, so you can always roll back:
 
 .. code-block:: bash
 
-   git tag                        # 查看所有版本
-   git checkout v0.1.0            # 检出上一个稳定版本（或 git switch -c hotfix v0.1.0）
+   git tag                        # list all versions
+   git checkout v0.1.0            # check out a previous stable version (or git switch -c hotfix v0.1.0)

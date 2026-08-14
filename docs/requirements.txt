@@ -1,4 +1,4 @@
-# Sphinx 文档依赖（Read the Docs 与本机构建共用）
+# Sphinx documentation dependencies (shared by Read the Docs and local builds)
 Sphinx>=7.0
 sphinx-rtd-theme>=2.0
 myst-parser>=3.0

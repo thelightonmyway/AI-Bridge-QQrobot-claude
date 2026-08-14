@@ -1,28 +1,37 @@
+.. meta::
+   :description: A persistent QQ bot bridge for Claude Code and other terminal CLI agents.
+
 Agent Keep
 ==========
 
-**Agent Keep** 是一个持久的 CLI Agent 网关 monorepo：把 Claude Code / Codex / AGY 这些终端 CLI
-Agent 接入 QQ 即时通讯，让你用手机 QQ 直接与 Claude Code 对话。
+**Agent Keep** is a persistent CLI agent gateway monorepo. It connects
+terminal-based agents — Claude Code, Codex, AGY, and similar — to QQ instant
+messaging, so you can chat with Claude Code directly from QQ on your phone.
 
 .. note::
 
-   当前文档以 **claude-code-qq-bridge** （QQ Bridge）为核心，它也是本项目正在使用并持续维护的组件。
-   仓库中还包含 codex-qq-bridge 与 agy-qq-bridge 两个兄弟包，结构类似，文档暂不逐一展开。
+   This documentation covers the **claude-code-qq-bridge** package, which
+   connects Claude Code to QQ. The repository also contains two sibling
+   packages, ``codex-qq-bridge`` and ``agy-qq-bridge``, with a similar
+   structure.
 
-架构一句话
-----------
+Architecture at a glance
+------------------------
 
-::
+.. code-block:: text
 
-    手机 QQ ──> QQ 机器人 WebSocket ──> bridge ──> tmux send-keys ──> Claude Code（交互模式）
-                                          ↑                        ↓
-                                          └──── session 文件 / JSONL ──→ push 回复给 QQ
+    Phone QQ ──> QQ bot WebSocket ──> bridge ──> tmux send-keys ──> Claude Code (interactive)
+                                           ↑                             ↓
+                                           └──── session / JSONL ────────→ replies pushed to QQ
 
-QQ 发来消息 → Bridge 转发给运行在 tmux 里的 Claude Code → Claude 的回复被 Bridge 捕获 → 推回手机 QQ。
-进程崩溃或异常退出时，Bridge 会自动 `--resume` 恢复会话并重新绑定 PID，保证"会话不丢"。
+A message sent from QQ is forwarded to Claude Code running inside a tmux
+session. The reply is captured by the bridge and pushed back to QQ. If the
+process crashes or exits unexpectedly, the bridge automatically resumes the
+session with ``--resume`` and re-binds the new PID, so the conversation is
+never lost.
 
-目录
-----
+Table of contents
+-----------------
 
 .. toctree::
    :maxdepth: 2
@@ -33,7 +42,7 @@ QQ 发来消息 → Bridge 转发给运行在 tmux 里的 Claude Code → Claude
 
 .. toctree::
    :maxdepth: 2
-   :caption: 使用说明
+   :caption: Usage
 
    usage
    commands
@@ -41,13 +50,13 @@ QQ 发来消息 → Bridge 转发给运行在 tmux 里的 Claude Code → Claude
 
 .. toctree::
    :maxdepth: 2
-   :caption: 参考
+   :caption: Reference
 
    api
    changelog
    release
 
-版本
-----
+Version
+-------
 
-当前版本：**v\ |version|**
+Current version: **v\ |version|**

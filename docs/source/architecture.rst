@@ -1,85 +1,97 @@
-架构
-====
+Architecture
+============
 
-数据流
-------
+Data flow
+---------
 
-::
+.. code-block:: text
 
-    QQ 用户 ──> QQ 机器人 WebSocket ──> bridge ──> tmux send-keys ──> Claude Code
-       ▲                                                          │
-       └────────── QQ 消息 / 审批按钮 ◄──────── 捕获回复 ◄─────────┘
+   QQ user ──> QQ bot WebSocket ──> bridge ──> tmux send-keys ──> Claude Code
+      ▲                                                            │
+      └────────── QQ messages / approval buttons ◄──────── capture replies ◄─┘
 
-Claude Code 的输入输出都是交互式终端，Bridge 通过两个**独立通道**与它协作：
+Claude Code's input and output are an interactive terminal. The bridge works
+with it through two **independent channels**:
 
-1. **session 文件通道**：读取 Claude 的 session 状态（如 ``waitingFor``），
-   据此渲染 QQ 上的审批按钮；
-2. **JSONL 通道**：读取 Claude 的对话 JSONL，把 assistant 文本作为回复推给 QQ。
+1. **Session file channel**: reads Claude's session state (such as
+   ``waitingFor``) and renders the approval buttons on QQ from it;
+2. **JSONL channel**: reads Claude's conversation JSONL and pushes assistant
+   text to QQ as replies.
 
-QQ 按钮点击后，Bridge 再通过 ``tmux send-keys`` 把对应按键（如审批的 1/2/3、
-``/mode`` 的 ``BTab``）发给 Claude，让任务继续。
+When a QQ button is clicked, the bridge sends the corresponding key back to
+Claude via ``tmux send-keys`` (for example 1/2/3 for approval, ``BTab`` for
+``/mode``) so the task can continue.
 
-设计原则
---------
+Design principles
+-----------------
 
-bridge.py 头部声明的原则：
+* **Single live session**: only one active Claude session is maintained at a
+  time;
+* **Reads only fixed structural fields, no content analysis**: the bridge
+  parses only the fixed fields of the session/JSONL files, never the
+  conversation content;
+* **Independent dual channels**: session state and JSONL do not depend on
+  each other;
+* **Cache used only for restart detection**: no state machine is maintained;
+* **No group messages**: only C2C (single-chat) messages are handled;
+* **No futures / state machines**.
 
-* **单会话保活**：同一时间只维护一个活跃 Claude 会话；
-* **只读固定结构字段，不做内容分析**：Bridge 只解析 session/JSONL 的固定字段，
-  不分析对话内容；
-* **双通道独立**：session 状态与 JSONL 互不依赖；
-* **缓存只用于重启检测**：不维护状态机；
-* **不支持群消息** （只处理 C2C 单聊）；
-* **无 Future / 状态机**。
+Modules
+-------
 
-模块划分
---------
-
-``packages/claude-code-qq-bridge/`` 下：
+Under ``packages/claude-code-qq-bridge/``:
 
 .. list-table::
    :header-rows: 1
    :widths: 30 70
 
-   * - 文件
-     - 作用
+   * - File
+     - Role
    * - ``src/claude_code_qq_bridge/bridge.py``
-     - 主程序：QQ WebSocket、tmux 驱动、会话恢复、命令分发、媒体发送、审批按钮。
-       约 2500 行，入口为 :func:`~claude_code_qq_bridge.bridge.cli`。
+     - Main program: QQ WebSocket, tmux driver, session recovery, command
+       dispatch, media sending, and approval buttons. Entry point:
+       :func:`~claude_code_qq_bridge.bridge.cli`.
    * - ``claude-conversation-monitor.py``
-     - 独立会话监控脚本：轮询 Claude JSONL，把对话写入 shell-snapshots 日志。
+     - Standalone session monitor: polls the Claude JSONL and writes the
+       conversation to the shell-snapshots log.
    * - ``claude-code-qq-bridge.py``
-     - 顶层 standalone 入口（与包入口等价）。
-   * - ``start.sh`` （仓库根目录）
-     - Bridge 生命周期管理：start / stop / restart / status，日志统一到
-       ``~/agent-keep/logs/bridge.log``。
+     - Top-level standalone entry point (equivalent to the package entry).
+   * - ``start.sh`` (repository root)
+     - Bridge lifecycle management: start / stop / restart / status, with all
+       logs collected in ``~/agent-keep/logs/bridge.log``.
 
-会话恢复机制（v0.1.0 核心）
---------------------------------
+Session recovery
+----------------
 
-* **pane-scoped PID detection**：Bridge 通过 tmux 找到**自己所在 pane** 内的 Claude
-  进程，而不是全局匹配 ``claude``，避免误绑定其它终端里的 Claude；
-* **自动 ``--resume``**：Claude 异常退出后，Bridge 自动用 ``--resume <session>``
-  重启并重新绑定恢复后的 PID；
-* **防误发**：``/btw`` 面板、普通消息在 Claude 未存活时**不会**被发送到 Bash
-  （``_pane_has_claude()`` 守卫 + ``/resume N`` 前校验目标 cwd）。
+* **Pane-scoped PID detection**: the bridge finds the Claude process inside
+  **its own tmux pane** instead of matching ``claude`` globally, avoiding
+  accidental binding to a Claude running in another terminal;
+* **Automatic ``--resume``**: when Claude exits unexpectedly, the bridge
+  restarts it with ``--resume <session>`` and re-binds the new PID;
+* **Mis-send guard**: ``/btw`` panel content and plain messages are never
+  sent to Bash while Claude is not alive (the ``_pane_has_claude()`` guard,
+  plus a ``cwd`` check before ``/resume N``).
 
-QQ 侧
------
+QQ side
+-------
 
-* 通过 ``bots.qq.com`` 的 ``getAppAccessToken`` 换取 token（缓存并在过期前刷新）；
-* 通过 gateway 建立 WebSocket，包含心跳、断线重连（2s→60s 退避）；
-* 消息与事件经 ``handle_c2c_message`` / ``handle_interaction`` 分发；
-* 图片 / 文件先上传 QQ 换取 URL，再以富媒体消息发送。
+* Obtains a token via ``getAppAccessToken`` from ``bots.qq.com`` (cached and
+  refreshed before expiry);
+* Opens a WebSocket through the gateway, with heartbeat and reconnection
+  (2s → 60s backoff);
+* Dispatches messages and events through ``handle_c2c_message`` /
+  ``handle_interaction``;
+* Uploads images / files to QQ to get a URL, then sends them as rich-media
+  messages.
 
-部署拓扑
---------
+Deployment layout
+-----------------
 
-::
+.. code-block:: text
 
-    ~/agent-keep/
-    ├── .env                  # APP_ID / CLIENT_SECRET / MASTER_OPENID / TMUX_SESSION（不入库）
-    ├── start.sh              # start / stop / restart / status
-    ├── setup.sh              # 一键部署脚本（见 Quick Start）
-    ├── logs/bridge.log       # 统一日志
-    └── packages/claude-code-qq-bridge/   # 核心包
+   ~/agent-keep/
+   ├── .env                  # APP_ID / CLIENT_SECRET / MASTER_OPENID / TMUX_SESSION
+   ├── start.sh              # start / stop / restart / status
+   ├── setup.sh              # one-click setup script (see Quick Start)
+   ├── logs/bridge.log       # unified log
+   └── packages/claude-code-qq-bridge/   # core package
