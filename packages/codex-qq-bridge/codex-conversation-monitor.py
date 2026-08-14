@@ -8,9 +8,9 @@
 import json, time
 from pathlib import Path
 
-SESSION_DIR = Path('/root/.codex/sessions/')
-LOG_FILE = Path('/root/codex-memory/conversation.log')
-OFFSETS_FILE = Path('/root/codex-memory/file_offsets.json')
+SESSION_DIR = Path.home() / '.codex' / 'sessions'
+LOG_FILE = Path.home() / 'codex-memory' / 'conversation.log'
+OFFSETS_FILE = Path.home() / 'codex-memory' / 'file_offsets.json'
 MAX_SIZE = 15 * 1024
 
 def load_offsets():

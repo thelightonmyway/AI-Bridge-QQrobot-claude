@@ -29,7 +29,7 @@ def load_env():
     candidates = [
         Path(".env"),
         Path(__file__).parent / ".env",
-        Path("/root/codex-qq-bridge/.env"),
+        Path.home() / "AI-Bridge-QQrobot-claude" / "packages" / "codex-qq-bridge" / ".env",
     ]
     for p in candidates:
         if p.exists():
@@ -332,7 +332,7 @@ async def start_codex_in_tmux():
         # --no-alt-screen: TUI 输出不切屏，方便 send-keys 交互
         # --sandbox danger-full-access: 全权限沙箱
         # --ask-for-approval on-request: Codex 自己判断是否需要问用户
-        cmd = "cd /root && codex --no-alt-screen --sandbox danger-full-access --ask-for-approval on-request"
+        cmd = "cd $HOME && codex --no-alt-screen --sandbox danger-full-access --ask-for-approval on-request"
         proc = await asyncio.create_subprocess_exec(
             "tmux", "send-keys", "-t", f"{TMUX_SESSION}:", cmd, "Enter"
         )
@@ -377,7 +377,7 @@ async def restart_codex_in_tmux():
     await asyncio.sleep(1)
 
     # 启动 Codex
-    cmd = "cd /root && codex --no-alt-screen --sandbox danger-full-access --ask-for-approval on-request"
+    cmd = "cd $HOME && codex --no-alt-screen --sandbox danger-full-access --ask-for-approval on-request"
     proc = await asyncio.create_subprocess_exec(
         "tmux", "send-keys", "-t", f"{TMUX_SESSION}:", cmd, "Enter"
     )

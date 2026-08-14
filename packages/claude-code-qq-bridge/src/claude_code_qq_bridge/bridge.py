@@ -68,14 +68,14 @@ APP_ID = os.environ.get("APP_ID", "")
 CLIENT_SECRET = os.environ.get("CLIENT_SECRET", "")
 MASTER_OPENID = os.environ.get("MASTER_OPENID", "")
 TMUX_SESSION = os.environ.get("TMUX_SESSION", "1")
-CLAUDE_HOME = str(Path.home() / ".claude")
-CLAUDE_PROJECT = "-home-xuyang"
-
-
 def path_to_claude_project(path: str) -> str:
-    """将文件系统路径转为 Claude Code 项目名。例如 /home/xuyang → -home-xuyang"""
+    """将文件系统路径转为 Claude Code 项目名。例如 /home/alice → -home-alice"""
     abspath = str(Path(path).resolve())
     return "-" + abspath.lstrip("/").replace("/", "-")
+
+
+CLAUDE_HOME = str(Path.home() / ".claude")
+CLAUDE_PROJECT = path_to_claude_project(str(Path.home()))
 
 
 # === ANSI 控制字符清理 ===
@@ -211,8 +211,8 @@ _log_path: Optional[str] = None
 _pid: Optional[int] = None
 _session_file: Optional[Path] = None
 _jsonl_watermark: int = 0
-_current_cwd: str = "/home/xuyang"       # dynamically updated by /cd, /resume, refresh
-_current_project: str = "-home-xuyang"    # derived from _current_cwd; used by /resume listing
+_current_cwd: str = str(Path.home())       # dynamically updated by /cd, /resume, refresh
+_current_project: str = path_to_claude_project(_current_cwd)  # derived from _current_cwd; used by /resume listing
 
 _access_token: Optional[str] = None
 _token_expires_at: float = 0.0

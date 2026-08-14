@@ -4,7 +4,7 @@ agy-conversation-monitor.py — AGY 多源会话监听脚本
 
 监听两个来源，合并写入 conversation.log：
   [LOCAL]    — CLI 本地对话（~/.gemini/antigravity-cli/brain/*/transcript.jsonl）
-  [QQ-C2C]   — QQ 私聊对话（/root/.agents/jiaoben/agy-memory/qq-conversation.log）
+  [QQ-C2C]   — QQ 私聊对话（$HOME/.agents/jiaoben/agy-memory/qq-conversation.log）
 
 输出格式：
   [HH:MM] [LOCAL] [USER]: 用户说的话
@@ -13,13 +13,13 @@ agy-conversation-monitor.py — AGY 多源会话监听脚本
   [HH:MM] [QQ-C2C] [ASST@agy]: AGY 回复
 
 文件路径（稳定目录，勿删）：
-  脚本：/root/.agents/jiaoben/agy-conversation-monitor.py
-  输出：/root/.agents/jiaoben/agy-memory/conversation.log
-  偏移：/root/.agents/jiaoben/agy-memory/file_offsets.json
-  QQ源：/root/.agents/jiaoben/agy-memory/qq-conversation.log（由 router.py 写入）
+  脚本：$HOME/.agents/jiaoben/agy-conversation-monitor.py
+  输出：$HOME/.agents/jiaoben/agy-memory/conversation.log
+  偏移：$HOME/.agents/jiaoben/agy-memory/file_offsets.json
+  QQ源：$HOME/.agents/jiaoben/agy-memory/qq-conversation.log（由 router.py 写入）
 
 启动（pm2）：
-  pm2 start /root/.agents/jiaoben/agy-conversation-monitor.py \\
+  pm2 start $HOME/.agents/jiaoben/agy-conversation-monitor.py \\
     --name agy-monitor --interpreter python3
   pm2 save
 
@@ -35,8 +35,8 @@ from pathlib import Path
 from datetime import datetime
 
 # ─── 路径配置 ─────────────────────────────────────────────
-BRAIN_DIR    = Path("/root/.gemini/antigravity-cli/brain")
-BASE_DIR     = Path("/root/.agents/jiaoben/agy-memory")
+BRAIN_DIR    = Path.home() / ".gemini" / "antigravity-cli" / "brain"
+BASE_DIR     = Path.home() / ".agents" / "jiaoben" / "agy-memory"
 QQ_CONV_LOG  = BASE_DIR / "qq-conversation.log"
 OUTPUT       = BASE_DIR / "conversation.log"
 OFFSETS      = BASE_DIR / "file_offsets.json"

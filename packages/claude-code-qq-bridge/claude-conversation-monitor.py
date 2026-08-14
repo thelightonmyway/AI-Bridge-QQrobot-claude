@@ -4,20 +4,21 @@
 用途：新会话启动时读取 conversation.log 快速续接任务。
 输出到 shell-snapshots 目录，10KB 自动循环截断。
 
-监听路径：/root/.claude/projects/-root/*.jsonl
+监听路径：$HOME/.claude/projects/-<sanitized-HOME>/*.jsonl
 这些是 Claude Code 本身的会话记录，包含未加密的用户消息和 AI 回复。
 """
 import os, re, time, json, sys
 from pathlib import Path
 
-# Claude Code 真实会话日志目录（JSONL 格式）
-CLAUDE_LOGS = Path("/home/xuyang/.claude/projects/-home-xuyang/")
-OUTPUT = Path("/home/xuyang/.claude/shell-snapshots/conversation.log")
+# Claude Code 真实会话日志目录（JSONL 格式），随当前用户 HOME 动态推导
+_CLAUDE_PROJECT_KEY = "-" + str(Path.home()).lstrip("/").replace("/", "-")
+CLAUDE_LOGS = Path.home() / ".claude" / "projects" / _CLAUDE_PROJECT_KEY
+OUTPUT = Path.home() / ".claude" / "shell-snapshots" / "conversation.log"
 MAX_SIZE = 15 * 1024  # 15KB 自动循环
 CHECK_INTERVAL = 10   # 轮询间隔（秒）
 
 # 保存偏移量的文件，重启后避免重读全部历史
-OFFSET_FILE = Path("/home/xuyang/.claude/shell-snapshots/monitor-offsets.json")
+OFFSET_FILE = Path.home() / ".claude" / "shell-snapshots" / "monitor-offsets.json"
 
 
 def log(msg: str):

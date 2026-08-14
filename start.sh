@@ -14,13 +14,46 @@ PIDFILE="${LOG_DIR}/bridge.pid"
 
 mkdir -p "${LOG_DIR}"
 
-# 与当前运行方式一致的入口（未安装 console script，用 python -c 注入 sys.path）
-# 指定带 aiohttp 的 Python：原 bridge 运行在 miniforge py 环境。
-PYTHON_BIN="${BRIDGE_PYTHON:-/home/xuyang/miniforge3/envs/py/bin/python3}"
-if ! "${PYTHON_BIN}" -c "import aiohttp" 2>/dev/null; then
-    echo "WARN: ${PYTHON_BIN} lacks aiohttp, falling back to python3" >&2
-    PYTHON_BIN="$(command -v python3)"
+# 定位运行 bridge 的 Python 解释器（与具体用户名无关，任何 Linux 用户都能用）：
+#   1. BRIDGE_PYTHON 环境变量（显式指定）
+#   2. PATH 上带 aiohttp 的 python3 / python / python3.11 / python3.10
+#   3. $HOME 下常见 conda 环境（miniforge3 / miniconda3 / miniforge / miniconda）里带 aiohttp 的 python
+#   4. 都没有则回退到 PATH 上的 python3 并给出提示
+# aiohttp 是硬依赖，setup.sh 安装时通过 pip 一并装到同一个 Python 里。
+resolve_bridge_python() {
+    local c p env_root env_py
+    if [ -n "${BRIDGE_PYTHON:-}" ]; then
+        echo "${BRIDGE_PYTHON}"
+        return 0
+    fi
+    for c in python3 python python3.11 python3.10; do
+        p="$(command -v "$c" 2>/dev/null)" || continue
+        if "$p" -c "import aiohttp" >/dev/null 2>&1; then
+            echo "$p"
+            return 0
+        fi
+    done
+    for env_root in "$HOME"/miniforge3/envs "$HOME"/miniconda3/envs "$HOME"/miniforge/envs "$HOME"/miniconda/envs; do
+        [ -d "$env_root" ] || continue
+        for env_py in "$env_root"/*/bin/python3; do
+            [ -x "$env_py" ] || continue
+            if "$env_py" -c "import aiohttp" >/dev/null 2>&1; then
+                echo "$env_py"
+                return 0
+            fi
+        done
+    done
+    echo "$(command -v python3 2>/dev/null || echo python3)"
+    return 1
+}
+
+PYTHON_BIN="$(resolve_bridge_python)"
+if ! "${PYTHON_BIN}" -c "import aiohttp" >/dev/null 2>&1; then
+    echo "WARN: 未找到带 aiohttp 的 Python。" >&2
+    echo "      可设置 BRIDGE_PYTHON 指向正确的解释器，或确认依赖已安装（./setup.sh 会自动装）。" >&2
 fi
+
+# 用 python -c 注入 sys.path 启动（不依赖 console script 是否在 PATH）
 BRIDGE_CMD=("${PYTHON_BIN}" -c "
 import sys, os
 sys.path.insert(0, '${REPO}/packages/claude-code-qq-bridge/src')

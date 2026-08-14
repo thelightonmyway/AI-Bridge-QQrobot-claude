@@ -34,7 +34,7 @@ def load_env():
     candidates = [
         Path(".env"),
         Path(__file__).parent / ".env",
-        Path("/root/claude-code-qq-bridge/.env"),
+        Path.home() / "AI-Bridge-QQrobot-claude" / ".env",
     ]
     for p in candidates:
         if p.exists():
@@ -62,7 +62,7 @@ CLIENT_SECRET = os.environ.get("CLIENT_SECRET", "")
 MASTER_OPENID = os.environ.get("MASTER_OPENID", "")
 TMUX_SESSION = os.environ.get("TMUX_SESSION", "1")
 CLAUDE_HOME = str(Path.home() / ".claude")
-CLAUDE_PROJECT = "-home-xuyang"
+CLAUDE_PROJECT = "-" + str(Path.home()).lstrip("/").replace("/", "-")
 API_BASE = "https://api.sgroup.qq.com"
 TOKEN_URL = "https://bots.qq.com/app/getAppAccessToken"
 GATEWAY_URL_PATH = "/gateway"
@@ -254,7 +254,7 @@ async def start_claude_in_tmux():
         # Start fresh Claude
         proc = await asyncio.create_subprocess_exec(
             "tmux", "send-keys", "-t", f"{TMUX_SESSION}:",
-            "cd /home/xuyang && script -q -c 'claude --permission-mode auto' /dev/null", "Enter"
+            "cd $HOME && script -q -c 'claude --permission-mode auto' /dev/null", "Enter"
         )
         await proc.communicate()
         # Wait for trust prompt, then press "1" to confirm
@@ -310,7 +310,7 @@ async def restart_claude_in_tmux():
     # 4. 启动全新 Claude
     proc = await asyncio.create_subprocess_exec(
         "tmux", "send-keys", "-t", f"{TMUX_SESSION}:",
-        "cd /home/xuyang && script -q -c 'claude --permission-mode auto' /dev/null", "Enter"
+        "cd $HOME && script -q -c 'claude --permission-mode auto' /dev/null", "Enter"
     )
     await proc.communicate()
     await asyncio.sleep(5)
@@ -798,7 +798,7 @@ def _save_master_openid(openid: str):
     candidates = [
         Path(".env"),
         Path(__file__).parent / ".env",
-        Path("/root/claude-code-qq-bridge/.env"),
+        Path.home() / "AI-Bridge-QQrobot-claude" / ".env",
     ]
     for p in candidates:
         if p.exists():
