@@ -312,12 +312,14 @@ if [ "${RESTART}" -eq 1 ]; then
         fi
 
         # 3. 确认只存在一个 Bridge 实例
+        # 用 [c]laude_code_qq_bridge 避免 pgrep -f 匹配到执行它的子 shell 自身
+        # （子 shell 命令行里含该字符串会导致误报为 2 个进程）。
         sleep 1
         local running_count
-        running_count="$(pgrep -f claude_code_qq_bridge 2>/dev/null | wc -l | tr -d ' ')"
+        running_count="$(pgrep -f '[c]laude_code_qq_bridge' 2>/dev/null | wc -l | tr -d ' ')"
         if [ "${running_count}" -ne 1 ]; then
             err "检测到 ${running_count} 个 Bridge 相关进程（期望 1 个）。"
-            echo "  请手动检查: pgrep -af claude_code_qq_bridge"
+            echo "  请手动检查: pgrep -af '[c]laude_code_qq_bridge'"
             return 1
         fi
 
