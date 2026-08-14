@@ -21,5 +21,6 @@ build/
 
 # Sphinx 文档构建产物
 docs/_build/
+docs/source/generated/
 venv-docs/
 

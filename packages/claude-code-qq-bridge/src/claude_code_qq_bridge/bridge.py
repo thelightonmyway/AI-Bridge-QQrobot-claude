@@ -742,7 +742,7 @@ def list_recent_sessions(limit: int = 10) -> list:
 
 
 def find_jsonl_path(session_id: str) -> Optional[str]:
-    """Given a session_id, search all ~/.claude/projects/*/<session_id>.jsonl
+    """Given a session_id, search all ``~/.claude/projects/*/<session_id>.jsonl``
     to find the actual JSONL file on disk. Returns the path or None."""
     projects_dir = Path(CLAUDE_HOME) / "projects"
     if not projects_dir.exists():
