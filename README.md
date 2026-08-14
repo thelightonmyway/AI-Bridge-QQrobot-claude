@@ -42,7 +42,7 @@ the original author for sharing their work.
 ## Quick Start
 
 ```bash
-git clone https://github.com/thelightonmyway/agent-keep.git ~/AI-Bridge-QQrobot-claude
+git clone https://github.com/thelightonmyway/AI-Bridge-QQrobot-claude.git ~/AI-Bridge-QQrobot-claude
 cd ~/AI-Bridge-QQrobot-claude
 ./setup.sh
 ```
