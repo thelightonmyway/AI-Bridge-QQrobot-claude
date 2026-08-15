@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-claude-code-qq-bridge.py v3.0 - Claude Code QQ Bridge
+claude-code-qq-bridge.py - Claude Code QQ Bridge
 
 Architecture:
   QQ → bridge → tmux send-keys → Claude Code (interactive mode)
@@ -2719,7 +2719,7 @@ def _detect_proxy_config() -> tuple:
 async def main():
     global _running
     _running = True
-    logger.info("Starting Claude Code QQ Bridge v3.0...")
+    logger.info(f"Starting Claude Code QQ Bridge {_get_version()}...")
 
     # 1. Start Claude Code in tmux
     await start_claude_in_tmux()
@@ -2777,16 +2777,25 @@ async def main():
             await asyncio.sleep(delay)
     logger.info("Bridge stopped")
 
+def _get_version() -> str:
+    """版本号统一从已安装 package metadata 读取（由根 VERSION 同步而来）。"""
+    try:
+        from importlib.metadata import version
+        return version("claude-code-qq-bridge")
+    except Exception:
+        return "0.0.0"
+
+
 def cli() -> int:
     """CLI 入口：处理 --init / --version 后运行主桥接"""
     import sys
-    
+
     if '--init' in sys.argv or (len(sys.argv) > 1 and sys.argv[1] == '--init'):
         print('TODO: --init not yet implemented')
         return 0
 
     if '--version' in sys.argv or '-V' in sys.argv:
-        print('Claude-Code-QQ-Bridge v3.0')
+        print(_get_version())
         return 0
 
     if '--help' in sys.argv or '-h' in sys.argv:

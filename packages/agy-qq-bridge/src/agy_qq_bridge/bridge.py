@@ -720,7 +720,14 @@ class QQBridge:
 
 # ================= CLI 入口与 --init 交互式配置 =================
 
-VERSION = "2.0.0"
+
+def _get_version() -> str:
+    """版本号统一从已安装 package metadata 读取（由根 VERSION 同步而来）。"""
+    try:
+        from importlib.metadata import version
+        return version("agy-qq-bridge")
+    except Exception:
+        return "0.0.0"
 
 
 def run_init():
@@ -786,7 +793,7 @@ def cli() -> int:
         return 0
 
     if "--version" in sys.argv or "-V" in sys.argv:
-        print(f"AGY-QQ-Bridge v{VERSION}")
+        print(_get_version())
         return 0
 
     if "--help" in sys.argv or "-h" in sys.argv:

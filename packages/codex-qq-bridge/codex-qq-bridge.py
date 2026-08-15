@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-codex-qq-bridge.py v1.0 — Codex QQ Bridge
+codex-qq-bridge.py — Codex QQ Bridge
 
 架构:
   QQ → WS网关 → bridge → tmux send-keys → Codex (interactive mode)

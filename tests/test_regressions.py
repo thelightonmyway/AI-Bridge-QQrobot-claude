@@ -1,14 +1,16 @@
 """每个用例都对应一个真实修复过的 bug。
 
 移植自 SHEN-Cheng 的 bugfix 分支，已适配本地基线。
-筛除的用例：test_versions_are_consistent / test_get_version_matches_version_file
-（依赖对方的统一版本体系，本地各 package 版本独立，不在本轮范围）。
+版本一致性用例（test_versions_are_consistent / test_get_version_matches_version_file）
+曾因"本地各 package 版本独立"被筛除；版本体系已统一为根 VERSION 单一来源后恢复。
 
 命名规则：test_<症状>，注释里写清原来是怎么坏的，避免以后又改回去。
 """
 
 import ast
+import importlib.metadata
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -208,3 +210,60 @@ def test_update_sh_cli_missing_is_not_fatal():
     src = (REPO_ROOT / "update.sh").read_text(encoding="utf-8")
     section = src.split("CLI_PATH=", 1)[1].split("阶段 9", 1)[0]
     assert "command -v claude-code-qq-bridge" in section
+
+
+# ───────────────────────── 版本一致性（根 VERSION 单一来源） ─────────────────────────
+
+_ROOT_VERSION = (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip()
+_PYPROJECTS = [REPO_ROOT / "pyproject.toml"] + sorted(
+    (REPO_ROOT / "packages").glob("*/pyproject.toml"))
+# pyproject 相对路径 -> distribution name（bridge --version 读取的 metadata）
+_DIST_BY_PROJECT = {
+    "packages/claude-code-qq-bridge/pyproject.toml": "claude-code-qq-bridge",
+    "packages/codex-qq-bridge/pyproject.toml": "codex-qq-bridge",
+    "packages/agy-qq-bridge/pyproject.toml": "agy-qq-bridge",
+}
+_TOML_HEADER = re.compile(r"(?m)^\[([^\]]+)\]\s*$")
+_TOML_VERSION = re.compile(r'(^version\s*=\s*)"([^"]*)"', re.M)
+
+
+def _project_section_version(text: str) -> str | None:
+    """取 [project] 表内的 version 字段值，找不到返回 None。"""
+    headers = list(_TOML_HEADER.finditer(text))
+    for i, m in enumerate(headers):
+        if m.group(1) != "project":
+            continue
+        end = headers[i + 1].start() if i + 1 < len(headers) else len(text)
+        found = _TOML_VERSION.search(text[m.start():end])
+        return found.group(2) if found else None
+    return None
+
+
+def test_all_pyproject_versions_equal_root():
+    """根 VERSION 是唯一人工维护版本，所有 pyproject [project].version 必须跟随。"""
+    assert _ROOT_VERSION, "root VERSION 不能为空"
+    for pf in _PYPROJECTS:
+        got = _project_section_version(pf.read_text(encoding="utf-8"))
+        assert got == _ROOT_VERSION, \
+            f"{pf.relative_to(REPO_ROOT)} version {got} != root {_ROOT_VERSION}"
+
+
+def test_sphinx_conf_has_no_hardcoded_version():
+    """Sphinx 版本必须动态读根 VERSION；conf.py 只允许 0.0.0 作为缺失时的哨兵。"""
+    conf = (REPO_ROOT / "docs" / "source" / "conf.py").read_text(encoding="utf-8")
+    assert "VERSION" in conf, "conf.py 必须引用根 VERSION"
+    for m in re.finditer(r'(?m)^\s*version\s*=\s*"(\d+\.\d+\.\d+)"', conf):
+        assert m.group(1) == "0.0.0", f"conf.py 硬编码了版本 {m.group(1)}"
+
+
+def test_installed_runtime_versions_equal_root():
+    """bridge 运行时版本来自已安装 package metadata（--version 输出），必须与根 VERSION 一致。"""
+    for rel, dist in _DIST_BY_PROJECT.items():
+        if not (REPO_ROOT / rel).exists():
+            continue
+        try:
+            got = importlib.metadata.version(dist)
+        except importlib.metadata.PackageNotFoundError:
+            pytest.skip(f"{dist} 未安装，跳过运行时版本校验")
+        assert got == _ROOT_VERSION, \
+            f"{dist} metadata version {got} != root {_ROOT_VERSION}（重新安装该 package）"

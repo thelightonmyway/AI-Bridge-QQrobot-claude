@@ -9,7 +9,8 @@ Usage:
 Behavior:
     1. Verify the git working tree is clean (abort otherwise).
     2. Read the previous git tag and the commits since it.
-    3. Bump VERSION (repo-root VERSION file).
+    3. Bump VERSION (repo-root VERSION file), then sync it into every
+       pyproject.toml via scripts/sync_version.py.
     4. Promote [Unreleased] entries in CHANGELOG.md to the new version
        (or auto-draft from git log when empty).
     5. Run tests if pytest + a tests/ dir exist.
@@ -192,8 +193,17 @@ def main() -> int:
         unreleased = draft_changelog(tag)
     promote_changelog(new_ver, unreleased)
 
-    # 2) write VERSION
+    # 2) write VERSION (single source of truth)
     VERSION_FILE.write_text(new_ver + "\n", encoding="utf-8")
+
+    # 2.5) sync the derived pyproject versions from root VERSION
+    sync = run([sys.executable, str(REPO_ROOT / "scripts" / "sync_version.py")])
+    if sync.returncode != 0:
+        print(sync.stdout[-2000:])
+        print(sync.stderr[-2000:])
+        print("❌ sync_version.py failed — not creating a release.")
+        return 1
+    print(f"  - Synced version {new_ver} into pyproject.toml files.")
 
     # 3) tests
     if not run_tests():
@@ -206,8 +216,11 @@ def main() -> int:
         return 1
 
     # 5) commit + tag
-    files = [str(VERSION_FILE.relative_to(REPO_ROOT)),
-             str(CHANGELOG_FILE.relative_to(REPO_ROOT))]
+    pyprojects = ([REPO_ROOT / "pyproject.toml"]
+                  + sorted((REPO_ROOT / "packages").glob("*/pyproject.toml")))
+    files = ([str(VERSION_FILE.relative_to(REPO_ROOT)),
+              str(CHANGELOG_FILE.relative_to(REPO_ROOT))]
+             + [str(p.relative_to(REPO_ROOT)) for p in pyprojects])
     p = run(["git", "add", *files])
     # docs/_build is gitignored; nothing else is expected to change
     if run(["git", "status", "--porcelain"]).stdout.strip():

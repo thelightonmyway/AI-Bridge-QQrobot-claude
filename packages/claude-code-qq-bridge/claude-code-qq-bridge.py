@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-claude-code-qq-bridge.py v3.0 - Claude Code QQ Bridge
+claude-code-qq-bridge.py - Claude Code QQ Bridge
 
 Architecture:
   QQ → bridge → tmux send-keys → Claude Code (interactive mode)
@@ -1149,7 +1149,7 @@ async def event_loop(ws):
 async def main():
     global _running
     _running = True
-    logger.info("Starting Claude Code QQ Bridge v3.0...")
+    logger.info("Starting Claude Code QQ Bridge...")
 
     # 1. Start Claude Code in tmux
     await start_claude_in_tmux()

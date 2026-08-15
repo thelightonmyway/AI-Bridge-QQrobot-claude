@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-codex-qq-bridge.py v1.0 — Codex QQ Bridge
+codex-qq-bridge.py — Codex QQ Bridge
 
 架构:
   QQ → WS网关 → bridge → tmux send-keys → Codex (interactive mode)
@@ -814,16 +814,25 @@ async def main():
 
     logger.info("[Main] Bridge stopped")
 
+def _get_version() -> str:
+    """版本号统一从已安装 package metadata 读取（由根 VERSION 同步而来）。"""
+    try:
+        from importlib.metadata import version
+        return version("codex-qq-bridge")
+    except Exception:
+        return "0.0.0"
+
+
 def cli() -> int:
     """CLI 入口：处理 --init / --version 后运行主桥接"""
     import sys
-    
+
     if '--init' in sys.argv or (len(sys.argv) > 1 and sys.argv[1] == '--init'):
         print('TODO: --init not yet implemented')
         return 0
 
     if '--version' in sys.argv or '-V' in sys.argv:
-        print('Codex-QQ-Bridge v1.0')
+        print(_get_version())
         return 0
 
     if '--help' in sys.argv or '-h' in sys.argv:
