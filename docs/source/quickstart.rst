@@ -88,8 +88,8 @@ get a reply from Claude. That is it.
 
 For the full command list, see :doc:`commands`.
 
-Updating — 更新到最新版
-------------------------
+Updating
+--------
 
 ``setup.sh`` installs a global command ``ai-bridge-update`` into
 ``~/.local/bin``. From **any directory**, update the project to the latest
