@@ -23,7 +23,7 @@ What can it do?
   reply from Claude, right in QQ on your phone.
 * **Keep conversations alive** — if Claude exits or crashes, the bridge
   restores the session automatically.
-* **Send images and files** from the bridge host to Claude.
+* **Send images and files** from the bridge host to QQ.
 * **Approve requests from QQ** — respond to Claude's permission prompts with
   a button tap.
 

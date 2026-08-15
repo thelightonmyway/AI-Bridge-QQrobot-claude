@@ -24,10 +24,10 @@ Command overview
      - Change Claude's working directory
    * - ``/sendimg <path>``
      -
-     - Send a local image from the bridge host
+     - Send a local image from the bridge host to QQ
    * - ``/sendfile <path>``
      -
-     - Send a local file from the bridge host
+     - Send a local file from the bridge host to QQ
    * - ``/mode``
      -
      - Switch the permission mode; ``/mode status`` shows the current mode
