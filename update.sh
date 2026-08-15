@@ -254,8 +254,15 @@ if ! "${PYTHON_BIN}" -c "import claude_code_qq_bridge" >/dev/null 2>&1; then
 fi
 CLI_PATH="$(dirname "${PYTHON_BIN}")/claude-code-qq-bridge"
 if [ ! -x "${CLI_PATH}" ]; then
-    VERIFY_OK=0
-    warn "未找到 CLI: ${CLI_PATH}"
+    # 回退：PATH 里的 console script，或 ~/.local/bin 里的安装（pip --user / setup.sh）
+    CLI_PATH="$(command -v claude-code-qq-bridge 2>/dev/null || true)"
+    if [ -z "${CLI_PATH}" ] && [ -x "${HOME}/.local/bin/claude-code-qq-bridge" ]; then
+        CLI_PATH="${HOME}/.local/bin/claude-code-qq-bridge"
+    fi
+fi
+if [ -z "${CLI_PATH}" ] || [ ! -x "${CLI_PATH}" ]; then
+    warn "未找到 console script claude-code-qq-bridge（start.sh 不依赖它，可忽略）"
+    CLI_PATH="(未安装)"
 fi
 if [ "${VERIFY_OK}" -eq 1 ]; then
     ok "验证通过: import 正常, CLI=${CLI_PATH}"

@@ -717,16 +717,17 @@ async def jsonl_poll():
 # ================= WS 事件循环 =================
 
 async def event_loop(ws):
-    global _session_id, _last_seq, _running, _ws
+    global _session_id, _last_seq, _running, _ws, _bot_openid
 
     _ws = ws
     _last_seq = None
     heartbeat_task = asyncio.create_task(_heartbeat_sender(ws, HEARTBEAT_INTERVAL))
 
+    from aiohttp import WSMsgType
     try:
         while _running and ws and not ws.closed:
             msg = await ws.receive()
-            if msg.type == 1:
+            if msg.type == WSMsgType.TEXT:
                 try:
                     payload = json.loads(msg.data)
                 except json.JSONDecodeError:
@@ -761,8 +762,11 @@ async def event_loop(ws):
                         task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
                     continue
 
-            elif msg.type == 9:
-                logger.warning("[WS] Close received")
+            elif msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSING, WSMsgType.CLOSED):
+                logger.warning(f"[WS] Close received (type={msg.type!r})")
+                break
+            elif msg.type == WSMsgType.ERROR:
+                logger.error(f"[WS] WS error received: {ws.exception()}")
                 break
 
     except Exception as e:
@@ -833,7 +837,7 @@ def cli() -> int:
     # 检查 .env
     env_found = any(
         __import__('pathlib').Path(p).exists()
-        for p in ['.env', str(__import__('pathlib').Path(__file__).parent / '.env'), str(__import__('pathlib').Path.home() / '.env')]
+        for p in ['.env', str(__import__('pathlib').Path(__file__).parent / '.env'), str(__import__('pathlib').Path.home() / 'AI-Bridge-QQrobot-claude' / 'packages' / 'codex-qq-bridge' / '.env')]
     )
     if not env_found:
         print('⚠️  未找到 .env 配置文件！')

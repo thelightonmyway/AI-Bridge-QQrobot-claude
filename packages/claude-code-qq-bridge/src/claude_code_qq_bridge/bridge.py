@@ -779,10 +779,24 @@ def _estimate_tokens_from_jsonl(jf: Path) -> str:
                     obj = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                # 优先用 usage 字段
+                # 优先用 usage 字段（顶层 / message 内两层都算，含缓存 token）
                 usage = obj.get("usage")
                 if isinstance(usage, dict):
-                    total_usage += usage.get("input_tokens", 0) + usage.get("output_tokens", 0)
+                    total_usage += (
+                        usage.get("input_tokens", 0)
+                        + usage.get("output_tokens", 0)
+                        + usage.get("cache_creation_input_tokens", 0)
+                        + usage.get("cache_read_input_tokens", 0)
+                    )
+                elif isinstance(obj.get("message"), dict):
+                    msg_usage = obj["message"].get("usage")
+                    if isinstance(msg_usage, dict):
+                        total_usage += (
+                            msg_usage.get("input_tokens", 0)
+                            + msg_usage.get("output_tokens", 0)
+                            + msg_usage.get("cache_creation_input_tokens", 0)
+                            + msg_usage.get("cache_read_input_tokens", 0)
+                        )
                 # 同时统计 user/assistant 文本量作为后备
                 if obj.get("type") in ("user", "assistant"):
                     msg = obj.get("message", {})
@@ -1143,7 +1157,7 @@ async def restart_claude_in_tmux(cwd: Optional[str] = None, resume_session_id: O
       绝不在 PID 缺失时谎报 "restarted"。
 
     Returns (ok: bool, info: str)。"""
-    global _current_cwd, _current_project, _last_recovery_attempt
+    global _current_cwd, _current_project, _last_recovery_attempt, CLAUDE_PROJECT
     # 重启本身也计入恢复尝试：防止 poll 里的 _ensure_claude_alive 在本函数
     # 执行期间并发再触发一次重启（20s 冷却）
     _last_recovery_attempt = time.time()
@@ -1323,10 +1337,22 @@ async def send_resume(ws):
     logger.info(f"Resume sent (session={_session_id}, seq={_last_seq})")
 
 
+# 单调递增的 msg_seq 计数器（每个 target 独立），避免 (time ^ rnd) % 65536 撞号
+_msg_seq_counters: Dict[str, int] = {}
+
+
 def _next_msg_seq(msg_id: str = 'default') -> int:
-    time_part = int(time.time()) % 100000000
-    rnd = int(uuid.uuid4().hex[:4], 16)
-    return (time_part ^ rnd) % 65536
+    """返回单调递增的 msg_seq（同一 target 内不回退、不重复）。
+
+    QQ 频道 API 要求 msg_seq 在目标粒度内递增；旧实现用
+    (time ^ random) % 65536 生成，高并发或同一秒内可能撞号。
+    """
+    seq = _msg_seq_counters.get(msg_id, 0) + 1
+    if len(_msg_seq_counters) > 1000:
+        _msg_seq_counters.clear()
+        seq = 1
+    _msg_seq_counters[msg_id] = seq
+    return seq
 
 
 _seen_messages: Dict[str, float] = {}
@@ -1564,7 +1590,7 @@ async def _upload_file_to_qq(file_path: str, file_type: int, openid: str) -> Opt
     try:
         # ── Step 1: upload_prepare ──
         logger.info(f"[Media] prepare upload: {fname} ({fsize} bytes, type={file_type})")
-        hashes = _compute_file_hashes(file_path)
+        hashes = await asyncio.to_thread(_compute_file_hashes, file_path)
         prepare_body = {
             "file_type": file_type,
             "file_size": str(fsize),
@@ -1989,6 +2015,10 @@ async def periodic_poll():
 def _save_master_openid(openid: str):
     """Persist MASTER_OPENID to .env file."""
     global MASTER_OPENID
+    # 防御：空 openid 绝不能写进 .env，否则主人绑定永久失效
+    if not openid:
+        logger.warning("[AutoBind] empty openid, ignoring")
+        return
     if openid == MASTER_OPENID:
         return
     candidates = [
@@ -2154,7 +2184,7 @@ async def handle_c2c_message(d: dict):
 
         # 裸 /resume → 非阻塞列出会话（不持锁，不影响 Claude）
         logger.info(f"[Resume] listing project={_current_project}, cwd={_current_cwd}")
-        sessions = list_recent_sessions(limit=10)
+        sessions = await asyncio.to_thread(list_recent_sessions, 10)
         if not sessions:
             await send_message_rest(user_openid, f"📭 当前项目（{_current_project}）没有历史会话。")
             return
@@ -2456,7 +2486,14 @@ async def handle_c2c_message(d: dict):
     if lower == "/ls" or lower.startswith("/ls "):
         _is_generating = False
         arg = content.strip()[3:].strip()  # everything after "/ls"
-        target = Path(arg).resolve() if arg else Path(_current_cwd)
+        if arg:
+            # 相对路径以当前工作目录为基准，避免被当成项目根目录解析
+            target = Path(arg).expanduser()
+            if not target.is_absolute():
+                target = Path(_current_cwd) / target
+            target = target.resolve()
+        else:
+            target = Path(_current_cwd)
         if not target.exists():
             await send_message_rest(user_openid, f"❌ 目录不存在: {target}")
             return
@@ -2521,6 +2558,10 @@ async def handle_interaction(d: dict):
     user_openid = d.get("user_openid") or author.get("user_openid")
     if not user_openid:
         user_openid = author.get("member_openid")
+    # openid 缺失时绝不写入 .env：否则会把 MASTER_OPENID 永久污染成 "None"
+    if not user_openid:
+        logger.warning("[Interaction] no openid in payload, ignoring button event")
+        return
     if user_openid != MASTER_OPENID:
         # Auto-bind on interaction too
         logger.warning(f"[Interaction] Unauthorized openid: {user_openid}, treating as new master")
@@ -2534,6 +2575,13 @@ async def handle_interaction(d: dict):
         if len(parts) >= 3:
             keystroke = {"allow": "1", "allow_always": "2", "deny": "3"}.get(parts[2])
             if keystroke:
+                # 与 C2C approve 分支保持一致：pane 内没有存活 Claude 时，
+                # "1"/"2"/"3" 会被 bash 当成命令执行，绝不能发出去。
+                if not _pane_has_claude():
+                    logger.warning(
+                        "[Interaction] claude not alive in pane — NOT sending keystroke to bash"
+                    )
+                    return
                 proc = await asyncio.create_subprocess_exec(
                     "tmux", "send-keys", "-t", f"{TMUX_SESSION}:", keystroke, ""
                 )
@@ -2554,16 +2602,17 @@ async def _heartbeat_sender(ws, interval: float):
 
 
 async def event_loop(ws):
-    global _session_id, _last_seq, _running, _ws, heartbeat_task
+    global _session_id, _last_seq, _running, _ws, heartbeat_task, _bot_openid
     _ws = ws
     _session_id = None  # clear stale session; only READY sets it
     _last_seq = None
     heartbeat_task = asyncio.create_task(_heartbeat_sender(ws, HEARTBEAT_INTERVAL))
     identified = False
+    from aiohttp import WSMsgType
     try:
         while _running and ws and not ws.closed:
             msg = await ws.receive()
-            if msg.type == 1:
+            if msg.type == WSMsgType.TEXT:
                 try:
                     payload = json.loads(msg.data)
                 except json.JSONDecodeError:
@@ -2580,6 +2629,14 @@ async def event_loop(ws):
                     interval_ms = d_data.get("heartbeat_interval", 30000)
                     heartbeat_interval = interval_ms / 1000.0 * 0.8
                     logger.info(f"Hello recv, heartbeat={heartbeat_interval:.1f}s")
+                    # 必须用网关下发的 interval 重建心跳 task（旧 task 已用写死的
+                    # HEARTBEAT_INTERVAL 启动，算出的值之前被丢弃了）。先取消旧的
+                    # 避免多个心跳 task 并发；重连后每次 Hello 都会重新走到这里。
+                    if heartbeat_task and not heartbeat_task.done():
+                        heartbeat_task.cancel()
+                    heartbeat_task = asyncio.create_task(
+                        _heartbeat_sender(ws, heartbeat_interval)
+                    )
                     if not identified:
                         await send_identify(ws)
                     continue
@@ -2605,9 +2662,13 @@ async def event_loop(ws):
                             lambda t: logger.error(f"[Task] Interaction handler failed: {t.exception()}") if t.exception() else None
                         )
                     continue
-            elif msg.type == 9:
-                logger.warning("WS close received")
+            elif msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSING, WSMsgType.CLOSED):
+                logger.warning(f"WS close received (type={msg.type!r})")
                 break
+            elif msg.type == WSMsgType.ERROR:
+                logger.error(f"WS error received: {ws.exception()}")
+                break
+            # PING/PONG 由 aiohttp 自动响应，无需处理
     except Exception as e:
         logger.error(f"Event loop error: {e}")
     finally:
@@ -2617,7 +2678,6 @@ async def event_loop(ws):
                 await heartbeat_task
             except asyncio.CancelledError:
                 pass
-
 
 async def main():
     global _running
@@ -2694,7 +2754,7 @@ def cli() -> int:
     # 检查 .env
     env_found = any(
         __import__('pathlib').Path(p).exists()
-        for p in ['.env', str(__import__('pathlib').Path(__file__).parent / '.env'), str(__import__('pathlib').Path.home() / '.env')]
+        for p in ['.env', str(__import__('pathlib').Path(__file__).parent / '.env'), str(__import__('pathlib').Path.home() / 'AI-Bridge-QQrobot-claude' / '.env')]
     )
     if not env_found:
         print('⚠️  未找到 .env 配置文件！')

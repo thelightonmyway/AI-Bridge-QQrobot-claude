@@ -197,7 +197,7 @@ EOF
 elif [ $# -eq 1 ]; then
     warn "用法：./setup.sh <APP_ID> <CLIENT_SECRET>（需两个参数），改用模板流程。"
     create_env_template
-elif [ -f "${ENV_FILE}" ] && grep -qv "YOUR_QQ_BOT" "${ENV_FILE}" 2>/dev/null; then
+elif [ -f "${ENV_FILE}" ] && ! grep -q "YOUR_QQ_BOT" "${ENV_FILE}" 2>/dev/null; then
     info ".env 已配置，保留现有文件"
 elif [ -f "${ENV_FILE}" ]; then
     info ".env 存在但未填写真实凭据，保留"

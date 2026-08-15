@@ -607,10 +607,11 @@ class QQBridge:
         self.ws = ws
         self.heartbeat_task = asyncio.create_task(self._heartbeat_sender(ws, HEARTBEAT_INTERVAL))
 
+        from aiohttp import WSMsgType
         try:
             while self.running and ws and not ws.closed:
                 msg = await ws.receive()
-                if msg.type == 1:
+                if msg.type == WSMsgType.TEXT:
                     try:
                         payload = json.loads(msg.data)
                     except json.JSONDecodeError:
@@ -659,8 +660,11 @@ class QQBridge:
                             task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
                         continue
 
-                elif msg.type == 9:
-                    logger.warning("WS close received")
+                elif msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSING, WSMsgType.CLOSED):
+                    logger.warning(f"WS close received (type={msg.type!r})")
+                    break
+                elif msg.type == WSMsgType.ERROR:
+                    logger.error(f"WS error received: {ws.exception()}")
                     break
 
         except Exception as e:
