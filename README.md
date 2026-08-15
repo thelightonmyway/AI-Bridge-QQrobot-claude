@@ -95,7 +95,7 @@ cd ~/AI-Bridge-QQrobot-claude
 
 ## Documentation
 
-Full documentation: <https://agent-keep.readthedocs.io/en/latest/>
+Full documentation: <https://ai-bridge-qqrobot-claude.readthedocs.io/en/latest/>
 
 ## Version
 
