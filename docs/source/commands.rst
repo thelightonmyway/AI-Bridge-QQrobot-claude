@@ -67,12 +67,12 @@ Command reference
     Change Claude's working directory to the given absolute path.
 
 ``/sendimg <path>``
-    Send a local image to Claude. Supported formats: jpg / jpeg / png / webp,
-    up to 10 MB.
+    Send a local image from the bridge host to QQ. Supported formats:
+    jpg / jpeg / png / webp, up to 10 MB.
 
 ``/sendfile <path>``
-    Send a local file to Claude. Supported formats: pdf / docx / xlsx / pptx
-    / txt / zip, and similar.
+    Send a local file from the bridge host to QQ. Supported formats:
+    pdf / docx / xlsx / pptx / txt / zip, and similar.
 
 ``/mode``
     Switch Claude's permission mode, cycling through Auto → Accept edits →

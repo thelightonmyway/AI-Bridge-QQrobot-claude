@@ -38,8 +38,8 @@ Current maintainer: thelightonmyway
 | `/btw <question>` | Ask a side question without interrupting the main flow |
 | `/mode` | Switch permission mode (Auto → Accept edits → Plan → Manual) |
 | `/stop` | Interrupt the current task |
-| `/sendimg <path>` | Send a local image to Claude |
-| `/sendfile <path>` | Send a local file to Claude |
+| `/sendimg <path>` | Send a local image from the bridge host to QQ |
+| `/sendfile <path>` | Send a local file from the bridge host to QQ |
 
 ## Quick Start
 
