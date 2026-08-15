@@ -13,6 +13,8 @@ This project is re-developed based on the ideas and base code of
 [zz327455573/agent-keep](https://github.com/zz327455573/agent-keep). Many thanks to
 the original author for sharing their work.
 
+Current maintainer: thelightonmyway
+
 ## Features
 
 - **Always-on agent** — Claude lives in a tmux session and keeps its context; if it

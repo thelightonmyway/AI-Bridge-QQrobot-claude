@@ -271,3 +271,5 @@ MIT。每个桥独立 MIT 协议。
 ---
 
 **作者 [@zz327455573](https://github.com/zz327455573)** — 竹山文达门窗 / 个人 AI Agent 在线化
+
+**当前维护者：thelightonmyway**
