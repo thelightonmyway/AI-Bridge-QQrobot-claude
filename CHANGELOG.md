@@ -12,6 +12,16 @@ Format conventions:
 
 ## [Unreleased]
 
+### Added
+
+- Long replies are no longer truncated: when a reply is too long for a normal
+  QQ message, the complete response is sent as a TXT file.
+
+### Changed
+
+- `/btw` answers now return the full text (long answers arrive as a TXT file)
+  and no longer interrupt the current task while the question is answered.
+
 ## [0.1.0] - 2026-08-14
 
 First stable local release. This release turns the QQ Bridge from "runnable"

@@ -88,8 +88,10 @@ Command reference
     Start a brand-new session.
 
 ``/btw <question>`` (alias ``/by-the-way``)
-    Ask a question unrelated to the main task; the answer is shown locally
-    without interrupting the main flow.
+    Ask a side question without interrupting the current task. Claude answers
+    it while the main task keeps running, and the full answer is sent back to
+    QQ. Answers may take a few minutes to arrive; very long answers are
+    delivered as a TXT file instead of being truncated.
 
 ``/pwd``
     Show Claude's current working directory.

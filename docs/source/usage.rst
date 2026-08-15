@@ -7,6 +7,10 @@ Chatting
 Send the bot a normal message. The bridge forwards it to Claude Code and
 pushes the reply back to QQ.
 
+When a reply is too long to be delivered as a normal QQ message, the bridge
+automatically sends the complete response as a TXT file instead of
+truncating it — so long answers always arrive in full.
+
 Sending images and files
 ------------------------
 
