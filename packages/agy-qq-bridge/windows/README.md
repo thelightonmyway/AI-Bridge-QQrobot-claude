@@ -1,39 +1,58 @@
-# AGY-QQ-Bridge-Windows: 极简 Windows 异步 C2C QQ 桥接器
+# AGY QQ Bridge for Windows
 
-本项目是 Google Antigravity (AGY) 在 Windows 原生环境下的 QQ 机器人通道桥接程序。
+A Windows-native QQ bridge that runs Google Antigravity (AGY) in a virtual console and relays private QQ messages to it. It connects to the official QQ WebSocket gateway, keeps an `agy.exe` process alive in a Windows pseudo-terminal (ConPTY), reads AGY replies from its `transcript.jsonl` logs, and sends them back to QQ as markdown messages.
 
----
+## What it is
 
-## 🌟 核心特性与架构
+A standalone single-file script (not installed as a pip package). It starts a persistent AGY session in a hidden ConPTY console, delivers your QQ messages with simulated key input, and streams AGY's model responses to QQ.
 
-由于 Windows 系统不支持原生的 `tmux` 或后台 PTY 发送按键，本项目采用了全新的 **One-off 单次命令自举连接** 或 **ConPTY 虚拟终端保活** 机制：
+## Requirements
 
-*   **进程保活**：在后台拉起一个 Windows 伪终端（ConPTY），保持 `agy.cmd` 长时间处于开启交互状态。
-*   **按键流输送**：通过 Windows 虚拟终端句柄直接物理模拟键盘输入（\r\n），解决了标准 I/O 管道导致的 CLI 交互闪退或死锁问题。
-*   **解耦读取**：输出端通过增量读取 `transcript.jsonl` 日志文件并推送到 QQ 客户端，实现完美的异步消息收发。
+- Windows (uses `pywinpty` / ConPTY and `cmd.exe`; there is no tmux)
+- Python 3.8+
+- The AGY CLI at `AGY_START_CMD` (default `C:\Users\Administrator\AppData\Local\agy\bin\agy.exe`)
+- Install dependencies:
 
----
-
-## 🛠️ 安装与部署指南
-
-### 1. 安装 Windows 环境依赖
-
-在 Windows 控制台（PowerShell 或 CMD）中执行以下命令，安装桥接器所需的异步与虚拟终端依赖库：
 ```powershell
 pip install pywinpty httpx aiohttp
 ```
 
-### 2. 配置环境变量
+## Configuration
 
-在脚本同级目录下创建 `.env` 环境变量配置文件，填写你的 QQ 机器人参数：
-```env
-APP_ID=你的QQ机器人AppID
-CLIENT_SECRET=你的QQ机器人密钥
-MASTER_OPENID=你的管理员OpenID
-BRAIN_DIR=C:\Users\Administrator\.gemini\antigravity-cli\brain
-LOG_DIR=C:\Users\Administrator\.agy-qq-bridge
+Create a `.env` next to the script (it is also looked up in the working directory and home directory) with your QQ bot credentials:
+
+| Variable | Description |
+|----------|-------------|
+| `APP_ID` | QQ bot AppID (QQ bot platform) |
+| `CLIENT_SECRET` | QQ bot client secret |
+| `MASTER_OPENID` | Your QQ OpenID; only this user's messages are answered (auto-bound from the first sender when empty) |
+| `BRAIN_DIR` | directory containing AGY `transcript.jsonl` (default `%USERPROFILE%\.gemini\antigravity-cli\brain`) |
+| `LOG_DIR` | directory for bridge logs (default `%USERPROFILE%\.agy-qq-bridge`) |
+| `AGY_START_CMD` | command used to start AGY (default `C:\Users\Administrator\AppData\Local\agy\bin\agy.exe --dangerously-skip-permissions`) |
+
+## Basic usage
+
+```powershell
+python agy_qq_bridge_win.py
 ```
 
-### 3. 后台自启守护
+Only one instance may run at a time. Message the bot to start; the first sender is bound as `MASTER_OPENID` if it is not set.
 
-推荐在 Windows 上使用 `NSSM` 或 Windows 任务计划程序将 `agy_qq_bridge_win.py` 包装为标准的系统服务，实现开机自动静默后台启动。
+| Command | Effect |
+|---------|--------|
+| `text` | forward to AGY |
+| `/new`, `/reset`, `/清空`, `/新对话` | restart AGY in a fresh session |
+| `/stop`, `/停止`, `/kill` | send Ctrl+C to interrupt the current task |
+
+## Limitations
+
+- Windows only; requires `pywinpty` (ConPTY). Linux/macOS use the tmux-based bridge instead.
+- Replies are polled from `transcript.jsonl`; only final model responses are forwarded.
+- Only the `MASTER_OPENID` user is answered.
+- Replies are sent as markdown messages, truncated at 4000 characters.
+
+## License
+
+MIT. See `LICENSE`.
+
+Portions of the original implementation are derived from zz327455573/agent-keep under the MIT License.
