@@ -52,10 +52,14 @@ info "检查环境依赖..."
 MISSING=()
 
 command -v python3 >/dev/null 2>&1 || MISSING+=("python3")
-command -v pip     >/dev/null 2>&1 || MISSING+=("pip")
 command -v tmux    >/dev/null 2>&1 || MISSING+=("tmux")
 command -v git     >/dev/null 2>&1 || MISSING+=("git")
 command -v claude  >/dev/null 2>&1 || MISSING+=("claude")
+
+# pip 检查改用 python3 -m pip --version（不依赖独立的 pip 命令，与后面安装统一）
+if ! python3 -m pip --version >/dev/null 2>&1; then
+    MISSING+=("pip (python3 -m pip)")
+fi
 
 if [ ${#MISSING[@]} -gt 0 ]; then
     err "缺少依赖：${MISSING[*]}"
@@ -64,6 +68,17 @@ if [ ${#MISSING[@]} -gt 0 ]; then
 fi
 
 ok "依赖检查通过"
+
+# Python 版本校验：需要 >= 3.10
+PY_VERSION="$(python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
+PY_MAJOR="${PY_VERSION%%.*}"
+PY_MINOR="${PY_VERSION#*.}"
+if [ "${PY_MAJOR}" -lt 3 ] || { [ "${PY_MAJOR}" -eq 3 ] && [ "${PY_MINOR}" -lt 10 ]; }; then
+    err "❌ Python 版本过低：当前 python3 = ${PY_VERSION}，需要 >= 3.10"
+    echo "   请升级：sudo apt install -y python3 python3-pip"
+    exit 1
+fi
+ok "Python 版本通过：${PY_VERSION} (>= 3.10)"
 
 # ── 2. 自动检测路径（与用户名无关，全部由 $HOME 推导） ──────────────────────
 HOME_DIR="${HOME}"

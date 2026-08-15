@@ -2679,6 +2679,43 @@ async def event_loop(ws):
             except asyncio.CancelledError:
                 pass
 
+
+def _detect_proxy_config() -> tuple:
+    """检测代理环境变量，返回 (trust_env, 日志描述)。
+
+    trust_env=True 让 aiohttp 自动读取标准代理变量（HTTPS_PROXY / https_proxy /
+    HTTP_PROXY / http_proxy / ALL_PROXY / all_proxy）；不硬编码任何本地代理。
+    遇到 SOCKS 时返回 False——aiohttp 内置代理仅支持 http/https，SOCKS 不假装
+    支持，明确回退直连。描述已脱敏，不含可能的账号密码。
+    """
+    proxy_env = next(
+        (
+            v
+            for v in (
+                os.environ.get("HTTPS_PROXY"),
+                os.environ.get("https_proxy"),
+                os.environ.get("HTTP_PROXY"),
+                os.environ.get("http_proxy"),
+                os.environ.get("ALL_PROXY"),
+                os.environ.get("all_proxy"),
+            )
+            if v
+        ),
+        None,
+    )
+    if not proxy_env:
+        return True, "未检测到代理环境变量，使用直连"
+    scheme = proxy_env.split("://", 1)[0].lower()
+    # 脱敏：只显示 host:port，不显示可能含账号密码的完整 URL
+    masked = proxy_env.rsplit("@", 1)[-1]
+    if scheme in ("socks", "socks4", "socks5", "socks5h"):
+        return False, (
+            f"检测到 SOCKS 代理({scheme}://{masked})，aiohttp 内置不支持 SOCKS，"
+            "本轮将直连。如需 SOCKS，请安装 aiohttp_socks 后自行接入。"
+        )
+    return True, f"检测到代理环境变量: {scheme}://{masked}"
+
+
 async def main():
     global _running
     _running = True
@@ -2707,10 +2744,19 @@ async def main():
         sys.exit(1)
 
     import aiohttp
+
+    # ── 代理兼容 ─────────────────────────────────────────────────────────
+    # trust_env=True 让 aiohttp 自动读取标准代理环境变量，见 _detect_proxy_config()
+    trust_env, proxy_note = _detect_proxy_config()
+    if proxy_note.startswith("检测到 SOCKS"):
+        logger.warning(proxy_note)
+    else:
+        logger.info(proxy_note)
+
     retry_index = 0
     while _running:
         try:
-            async with aiohttp.ClientSession() as session:
+            async with aiohttp.ClientSession(trust_env=trust_env) as session:
                 async with session.ws_connect(
                     gateway_url,
                     timeout=aiohttp.ClientTimeout(sock_connect=CONNECT_TIMEOUT),
