@@ -28,6 +28,7 @@ import sys
 import time
 import uuid
 import logging
+from datetime import datetime
 from typing import Optional, Dict
 from pathlib import Path
 
@@ -84,54 +85,107 @@ def strip_ansi(text: str) -> str:
     return _ANSI_RE.sub('', text)
 
 
-# === 从 capture-pane 输出中提取 BTW 面板中的纯净答案 ===
-_BTW_NOISE = re.compile(
-    r'^[│╭╰├└┤┐┘╮╯─━]*\s*$|'           # 纯框线字符
-    r'Esc to close|'                      # 关闭提示
-    r'^\s*>?\s*/btw\b|'                   # /btw 命令行
-    r'^\s*>?\s*/by-the-way\b|'            # /by-the-way 命令行
-    r'💬\s*BTW|'                          # BTW 标题
-    r'Answering[…\\.]*|'                   # 加载状态
-    r'^\s*claude\s*[>❯]|'                # claude prompt
-    r'^\s*$'                              # 空行
-)
+# ═══════════════════════════════════════════════════════════════
+# BTW 面板：零中断发送 + 官方 c 复制 raw Markdown 读取
+# ═══════════════════════════════════════════════════════════════
+# Claude Code 原生 /btw 的回答只存在 TUI 面板内存中，不写任何 JSONL。
+# 官方文档（interactive-mode#side-questions-with-btw）：
+#   * overlay 会主动显示最近 5 条旧 /btw 历史 —— 直接解析终端正文
+#     必然混入旧回答与 UI 文本（旧实现据此踩坑）；
+#   * 官方建议按 `c`：把“当前这一条 answer”的 raw Markdown 复制到
+#     clipboard，而不是从终端显示内容提取。
+# 本环境（WSL + tmux 3.2a，set-clipboard external + xterm clipboard）实测：
+#   * `c` 通过 OSC52 复制，tmux 捕获并新建一个 buffer（bufferN，编号只增
+#     不重用）；Windows clipboard（powershell Get-Clipboard）在该环境不可用；
+#   * 因此读取“复制后新建的那个 buffer”= 当前 answer 的 raw Markdown，
+#     无历史、无 UI、Markdown 表格原样保留，长文本完整。
+# capture-pane 现在只用于 overlay 是否出现 / 状态检测，不再作为正文来源。
+_BTW_HINT_END_RE = re.compile(r'Esc to close')
+_BTW_Q_RE = re.compile(r'^\s*(/btw|/by-the-way)\b', re.IGNORECASE)
 
-def _extract_btw_answer(captured: str) -> str:
-    """从已去 ANSI 的 capture-pane 文本中提取 BTW 面板内的纯净答案。"""
-    lines = captured.split("\n")
-    # 定位 BTW 面板：找到包含 "💬 BTW" 或 "/btw" 的行
-    panel_start = -1
-    for i, line in enumerate(lines):
-        if "💬" in line and "BTW" in line:
-            panel_start = i
-            break
-    if panel_start < 0:
-        for i, line in enumerate(lines):
-            if "/btw" in line.lower():
-                panel_start = i
-                break
-    if panel_start < 0:
-        return ""
 
-    # 收集面板内容直到终端 prompt 或面板结束
-    result = []
-    for i in range(panel_start + 1, len(lines)):
-        line = lines[i].strip()
-        # 过滤噪音行
-        if _BTW_NOISE.match(line):
+def _btw_panel_is_open(text: str) -> bool:
+    """BTW 面板是否打开（出现底部提示行、问题行或 Answering）。"""
+    for line in text.split("\n"):
+        if _BTW_HINT_END_RE.search(line) or _BTW_Q_RE.match(line):
+            return True
+        if "Answering" in line:
+            return True
+    return False
+
+
+def _tmux_buffer_names() -> list:
+    """当前 tmux 的 buffer 名列表（如 ['buffer3', 'buffer5']）。"""
+    try:
+        r = subprocess.run(
+            ["tmux", "list-buffers", "-F", "#{buffer_name}"],
+            capture_output=True, text=True, timeout=5,
+        )
+        return [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
+    except Exception as e:
+        logger.warning(f"[btw-copy] list-buffers error: {e}")
+        return []
+
+
+def _tmux_buffer_num(name: str) -> int:
+    d = "".join(ch for ch in name if ch.isdigit())
+    return int(d) if d.isdigit() else 0
+
+
+def _tmux_newest_buffer_after(before: int):
+    """buffer 号 > before 的最新 buffer，返回 (buffer名, 内容)；没有则 (None, '')。
+
+    before 是复制前记录的最大 buffer 号（sentinel）：只认复制后新建的
+    buffer，绝不会读到旧内容。tmux 的 buffer 编号只增不重用（实测删除后
+    下次仍是更大的新号）。
+    """
+    best_num, best_name, best_content = before, None, ""
+    for name in _tmux_buffer_names():
+        num = _tmux_buffer_num(name)
+        if num <= before or num <= best_num:
             continue
-        # 遇到 claude prompt 或 > 开头的命令 → 面板结束
-        if re.match(r'^\s*(claude\s*[>❯]|\S*>\s)', line):
-            break
-        result.append(line)
+        try:
+            r = subprocess.run(
+                ["tmux", "show-buffer", "-b", name],
+                capture_output=True, text=True, timeout=5,
+            )
+        except Exception as e:
+            logger.warning(f"[btw-copy] show-buffer error: {e}")
+            continue
+        best_num, best_name, best_content = num, name, r.stdout
+    return best_name, best_content
 
-    # 过滤掉和原问题相同的行（面板里可能显示的问题文本较短）
-    # 合并为文本
-    text = "\n".join(result).strip()
-    # 去除可能的重复标题和状态文本
-    text = re.sub(r'💬\s*BTW\s*[/\w]*\s*', '', text)
-    text = re.sub(r'Answering[…\\.]*', '', text)
-    return text.strip()
+
+async def _btw_copy_answer(max_wait: float = 4.0) -> str:
+    """按 c 把当前 BTW answer 的 raw Markdown 复制到 tmux buffer 并读取。
+
+    记录复制前最大 buffer 号，按 c 后轮询等待出现更新的 buffer，返回其
+    内容，并在读取成功后删除该 buffer（保持 buffer 列表不膨胀）。返回空串
+    表示复制未生成新 buffer（overlay 已关闭或复制失败）。
+    """
+    before_names = _tmux_buffer_names()
+    before = max([_tmux_buffer_num(n) for n in before_names] or [0])
+    logger.info(f"[btw-copy] buffers_before={before_names} (max={before}) 发送 c")
+    await _tmux_send_key("c", pause=0.3)
+    deadline = time.time() + max_wait
+    while time.time() < deadline:
+        await asyncio.sleep(0.2)
+        name, content = _tmux_newest_buffer_after(before)
+        if name is not None:
+            after_names = _tmux_buffer_names()
+            logger.info(
+                f"[btw-copy] buffers_after_c={after_names} selected_buffer={name} "
+                f"clipboard_len={len(content)} clipboard_first_100={content[:100]!r} "
+                f"clipboard_last_100={content[-100:]!r} answer_source=tmux_clipboard"
+            )
+            subprocess.run(["tmux", "delete-buffer", "-b", name],
+                           capture_output=True, text=True, timeout=5)
+            return content
+    logger.warning(
+        f"[btw-copy] 复制失败: 按 c 后 {max_wait}s 内未出现新 buffer "
+        f"(buffers_before={before_names}) answer_source=COPY_FAILED"
+    )
+    return ""
 
 
 # === 快速抓取（不等待稳定，用于轮询） ===
@@ -143,6 +197,105 @@ async def _capture_pane() -> str:
     )
     stdout, _ = await proc.communicate()
     return strip_ansi(stdout.decode("utf-8", errors="replace"))
+
+
+# === /btw 专用的 tmux 按键封装（核心：一律不发 Escape） ===
+async def _tmux_send_key(key: str, pause: float = 0.3) -> None:
+    """向 Claude pane 发送一个命名的 tmux 键（Enter/Escape/Up/Down…）。"""
+    proc = await asyncio.create_subprocess_exec(
+        "tmux", "send-keys", "-t", f"{TMUX_SESSION}:", key, ""
+    )
+    await proc.communicate()
+    if pause:
+        await asyncio.sleep(pause)
+
+
+async def _tmux_send_literal(text: str, pause: float = 0.3) -> None:
+    """向 Claude pane 发送字面文本（-l：'Tab'/'Down' 等原样输入，不做键名解释）。"""
+    proc = await asyncio.create_subprocess_exec(
+        "tmux", "send-keys", "-t", f"{TMUX_SESSION}:", "-l", text
+    )
+    await proc.communicate()
+    if pause:
+        await asyncio.sleep(pause)
+
+
+async def _send_btw_command(question: str, pre_submit: str) -> bool:
+    """发送 /btw：直接输入命令 + Enter，绝不发 Escape。
+
+    Escape 是主任务被中断的根因（"esc to interrupt"），因此发送路径零 Escape。
+    主任务完成/重绘的过渡期偶会吞掉 Enter，导致命令留在输入框；
+    因此提交后轮询面板确认已注册（出现 Answering 或“新出现的”缩进问题行），
+    未注册则重发（最多 3 次）。
+    """
+    pre_lines = set(pre_submit.split("\n"))
+    q_probe = question[:20].lower()
+    for attempt in range(1, 4):
+        await _tmux_send_literal(f"/btw {question}", pause=0.3)
+        await _tmux_send_key("Enter", pause=0.5)
+        registered = False
+        for _ in range(16):  # 最多等 8s
+            await asyncio.sleep(0.5)
+            text = await _capture_pane()
+            if "answering" in text.lower():
+                registered = True
+                break
+            for ln in text.split("\n"):
+                # 必须是“提交前不存在”的新行，避免新问题与旧问题前 20 字符
+                # 相同导致的误判；面板问题行是“缩进 + /btw”，输入框以 ❯ 开头。
+                if ln not in pre_lines and re.match(
+                    rf'^\s+/btw\b.*{re.escape(q_probe)}', ln, re.I
+                ):
+                    registered = True
+                    break
+            if registered:
+                break
+        if registered:
+            return True
+        logger.warning(f"[BTW] 提交未生效（可能被主任务过渡期吞掉 Enter），重试 {attempt}/3")
+    return False
+
+
+async def _wait_btw_answer(pre_submit: str, timeout: float = 240.0):
+    """等待 /btw 回答完成，返回完成瞬间的面板文本（超时返回 None）。
+
+    完成判定不依赖整帧稳定（后台主任务输出可能在持续变化）：
+      * 主路径：曾看到 "Answering"（确认本次提交已被处理），随后底部提示
+        变为完成态（含 "c to copy"/"f to fork"）；
+      * 兜底：面板已变化、无 "Answering"、连续 4 帧相同（极短回答适用）。
+    """
+    deadline = time.time() + timeout
+    prev = None
+    stable = 0
+    saw_answering = False
+    while time.time() < deadline:
+        await asyncio.sleep(0.5)
+        cur = await _capture_pane()
+        low = cur.lower()
+        done_hint = ("c to copy" in low) or ("f to fork" in low)
+        has_answering = "answering" in low
+        if has_answering:
+            saw_answering = True
+        if prev is None:
+            prev = cur
+            continue
+        if cur != prev:
+            stable = 0
+        else:
+            stable += 1
+        prev = cur
+        if saw_answering and done_hint:
+            # 面板在回答完成后约 0.5s 内会关闭，等待越长越容易错过；只留少许抖动余量
+            await asyncio.sleep(0.15)
+            return cur
+        changed = cur != pre_submit
+        if changed and not has_answering and stable >= 4:
+            await asyncio.sleep(0.15)
+            return cur
+    logger.warning("[BTW] 等待回答完成超时")
+    return None
+
+
 
 
 # === tmux 命令锁，防止并发操作 ===
@@ -1222,8 +1375,82 @@ async def send_input_notify(user_openid: str, msg_id: str) -> bool:
         return False
 
 
-async def send_message_rest(user_openid: str, content: str, *, keyboard: bool = False) -> bool:
-    """Send message to QQ user. If keyboard=True, append approval buttons."""
+# ═══════════════════════════════════════════════════════════════
+# QQ 长文本回复统一出口（send_reply）
+# ═══════════════════════════════════════════════════════════════
+# QQ 单条 markdown 消息内容上限约 1500 字符；留 100 字符安全余量，
+# 避免特殊字符 / 计数字节偏差导致发送失败。
+QQ_TEXT_SAFE_LIMIT = 1400
+LONG_REPLY_NOTICE = "📄 回复内容较长，已转为 TXT 文件发送。"
+LONG_REPLY_DIR = Path("/tmp/claude-code-qq-bridge")
+
+
+def _ensure_long_reply_dir() -> Path:
+    """确保临时目录存在，不存在则自动创建。"""
+    LONG_REPLY_DIR.mkdir(parents=True, exist_ok=True)
+    return LONG_REPLY_DIR
+
+
+def _write_long_reply_tmp(text: str) -> Path:
+    """将完整回复写入临时 UTF-8 .txt 文件，返回路径。
+    文件名类似 claude_reply_20260814_232800.txt（追加微秒避免同秒冲突）。"""
+    _ensure_long_reply_dir()
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    tmp = LONG_REPLY_DIR / f"claude_reply_{ts}.txt"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    return tmp
+
+
+async def send_reply(user_openid: str, content: str, *, keyboard: bool = False) -> bool:
+    """Claude -> QQ 文本回复的统一出口。
+
+    - 短文本（len <= QQ_TEXT_SAFE_LIMIT）：按原样直接发送 QQ 消息。
+    - 长文本：**不截断**，完整内容写入临时 .txt，先提示一句，再复用
+      send_local_file（即 /sendfile 背后的上传/发送能力）把 txt 发给用户；
+      无论成功失败都用 try/finally 删除临时文件。
+    - keyboard=True 时跳过 fallback（授权按钮必须伴随文本，且该场景文本固定很短）。
+    """
+    raw = content or ""
+    if not raw.strip():
+        return True
+    # 长度按“实际要发送的完整内容”计，且落盘必须用 raw（不 strip、不截断），
+    # 保证转 txt 时零丢失。短路径也发 raw 原样。
+    if keyboard or len(raw) <= QQ_TEXT_SAFE_LIMIT:
+        return await _send_raw_qq_text(user_openid, raw, keyboard=keyboard)
+
+    # —— 长文本：转临时 txt 文件发送 ——
+    logger.info(
+        f"[LongReply] len={len(raw)} > {QQ_TEXT_SAFE_LIMIT}, txt fallback, "
+        f"openid={user_openid}"
+    )
+    try:
+        tmp_path = _write_long_reply_tmp(raw)
+    except Exception as e:
+        logger.error(f"[LongReply] write tmp failed: {e}")
+        return False
+    logger.info(f"[LongReply] tmp file written: {tmp_path} ({len(raw)} chars)")
+
+    await _send_raw_qq_text(user_openid, LONG_REPLY_NOTICE)
+    ok = False
+    try:
+        result = await send_local_file(str(tmp_path), user_openid)
+        ok = result.startswith("✅")
+        logger.info(f"[LongReply] file send {'OK' if ok else 'FAIL'}: {result}")
+    except Exception as e:
+        logger.error(f"[LongReply] file send exception: {e}")
+    finally:
+        # 无论发送成功失败都要清理临时文件
+        try:
+            tmp_path.unlink(missing_ok=True)
+            logger.info(f"[LongReply] tmp removed: {tmp_path}")
+        except Exception as e:
+            logger.error(f"[LongReply] tmp removal failed: {tmp_path}: {e}")
+    return ok
+
+
+async def _send_raw_qq_text(user_openid: str, content: str, *, keyboard: bool = False) -> bool:
+    """底层：把一段文本按 QQ 消息直接发出（不做长度检查）。"""
     token = await ensure_token()
     client = get_http_client()
     headers = {
@@ -1232,8 +1459,7 @@ async def send_message_rest(user_openid: str, content: str, *, keyboard: bool = 
         "User-Agent": "ClaudeCode-QQ-Bridge/3.0",
     }
     msg_seq = _next_msg_seq(user_openid)
-    display_content = content[:1500] + "\n\n... (truncated)" if len(content) > 1500 else content
-    body = {"markdown": {"content": display_content}, "msg_type": 2, "msg_seq": msg_seq}
+    body = {"markdown": {"content": content}, "msg_type": 2, "msg_seq": msg_seq}
 
     if keyboard:
         body["keyboard"] = build_approval_keyboard()
@@ -1247,6 +1473,11 @@ async def send_message_rest(user_openid: str, content: str, *, keyboard: bool = 
     except Exception as e:
         logger.error(f"Send exception: {e}")
         return False
+
+
+async def send_message_rest(user_openid: str, content: str, *, keyboard: bool = False) -> bool:
+    """旧接口兼容别名：行为与 send_reply 完全一致（含长文本 fallback）。"""
+    return await send_reply(user_openid, content, keyboard=keyboard)
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1721,7 +1952,7 @@ async def periodic_poll():
                     clean_reply, media_list = _extract_media_markers(reply)
                     if clean_reply:
                         logger.info(f"[Poll -> QQ Text] {clean_reply[:80]}")
-                        await send_message_rest(MASTER_OPENID, clean_reply[:1500])
+                        await send_reply(MASTER_OPENID, clean_reply)
                         await asyncio.sleep(0.3)
                     if media_list:
                         await _send_media_from_markers(media_list, MASTER_OPENID)
@@ -1744,7 +1975,7 @@ async def periodic_poll():
                         f"[Poll -> QQ] {clean_reply[:100]} "
                         f"(from {_log_path}, {len(new_texts)} blocks)"
                     )
-                    await send_message_rest(MASTER_OPENID, clean_reply[:1500])
+                    await send_reply(MASTER_OPENID, clean_reply)
                 if media_list:
                     logger.info(f"[Poll -> QQ Media] {len(media_list)} file(s)")
                     await _send_media_from_markers(media_list, MASTER_OPENID)
@@ -2170,54 +2401,37 @@ async def handle_c2c_message(d: dict):
             if not await _ensure_claude_alive():
                 await send_message_rest(MASTER_OPENID, "❌ Claude Code 已退出，自动恢复失败")
                 return
-            # 清除弹窗
-            for key in ["Escape", "Escape"]:
-                proc = await asyncio.create_subprocess_exec(
-                    "tmux", "send-keys", "-t", f"{TMUX_SESSION}:", key, ""
-                )
-                await proc.communicate()
-                await asyncio.sleep(0.15)
-            # 发送 /btw
-            if not await send_to_claude(f"/btw {btw_question}"):
+            pre_submit = await _capture_pane()
+            # 发送 /btw：零 Escape（Escape 会中断主任务），直接输入命令。
+            # 主任务 / 工具调用 / 长 Bash 照常运行，Claude PID 保持不变。
+            if not await _send_btw_command(btw_question, pre_submit):
+                await send_message_rest(user_openid, "⚠️ /btw 提交失败（可能被主任务过渡期吞掉），请重试")
                 return
-
-            # 轮询等待 BTW 面板稳定（连续 3 次相同且不含 Answering）
+            frame = await _wait_btw_answer(pre_submit, timeout=240.0)
             btw_answer = ""
-            deadline = time.time() + 60.0
-            STABLE_COUNT = 3
-            POLL_INTERVAL = 0.5
-            prev = ""
-            stable = 0
-            while time.time() < deadline:
-                await asyncio.sleep(POLL_INTERVAL)
-                cur = await _capture_pane()
-                if cur == prev:
-                    stable += 1
-                else:
-                    stable = 0
-                    prev = cur
-                # 需要稳定且不含 "Answering"（含 … 或 ...）
-                has_answering = "Answering" in cur
-                if stable >= STABLE_COUNT and not has_answering:
-                    btw_answer = _extract_btw_answer(cur)
+            if frame is not None:
+                # 官方推荐：overlay 完成后按 c，把“当前这一条 answer”的 raw
+                # Markdown 复制到 clipboard（本环境经 OSC52 进 tmux buffer）。
+                # capture-pane 仅用于确认 overlay 仍开着；不再解析正文。
+                for _ in range(3):
+                    if not _btw_panel_is_open(await _capture_pane()):
+                        break
+                    btw_answer = (await _btw_copy_answer()).strip()
                     if btw_answer:
                         break
-                    # 提取为空但稳定 → 可能面板已消失，再等一小段
-                    if stable >= STABLE_COUNT + 4:
-                        break
-
-            # 关闭 BTW 面板
-            proc = await asyncio.create_subprocess_exec(
-                "tmux", "send-keys", "-t", f"{TMUX_SESSION}:", "Escape", ""
-            )
-            await proc.communicate()
+                    await asyncio.sleep(0.4)
+                if btw_answer:
+                    logger.info(f"[BTW] 复制 raw Markdown: {len(btw_answer)} chars")
+                # 复制成功后关闭 overlay。只有确认面板仍开着才发 Escape：
+                # 面板开着时 Esc 只关闭覆盖层，不会打断主任务；面板已关时
+                # 发 Esc 会落到主会话，可能中断正在生成的主任务。
+                if btw_answer and _btw_panel_is_open(await _capture_pane()):
+                    await _tmux_send_key("Escape", pause=0.3)
 
         if btw_answer:
-            await send_message_rest(user_openid, f"💬 **BTW**\n{btw_answer[:1500]}")
-        elif time.time() >= deadline:
-            await send_message_rest(user_openid, "⚠️ BTW 回答超时（60s），请重试")
+            await send_reply(user_openid, "💬 BTW\n" + btw_answer)
         else:
-            await send_message_rest(user_openid, "⚠️ 未能提取 BTW 回答，请稍后重试")
+            await send_message_rest(user_openid, "⚠️ BTW 回答超时（240s）或未能复制完整内容，请重试")
         return
 
     # ── 处理图片/文件附件 ─────────────────────────────
