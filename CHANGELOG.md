@@ -16,11 +16,20 @@ Format conventions:
 
 - Long replies are no longer truncated: when a reply is too long for a normal
   QQ message, the complete response is sent as a TXT file.
+- Added `/status` to report the local Claude state and visible task progress
+  without calling the model or consuming tokens.
 
 ### Changed
 
 - `/btw` answers now return the full text (long answers arrive as a TXT file)
   and no longer interrupt the current task while the question is answered.
+- `/mode` now queries the current local TUI mode without changing it, while
+  `/mode auto|manual|edit|plan` switches directly to the requested mode and
+  verifies the result from the Claude TUI.
+
+### Fixed
+
+- Fixed command matching so `/mode` no longer captures `/model`.
 
 ## [0.1.0] - 2026-08-14
 

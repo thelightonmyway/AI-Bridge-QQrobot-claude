@@ -30,14 +30,24 @@ the original author for sharing their work.
 | `/resume` | List recent sessions; `/resume N` restores session N |
 | `/pwd` | Show the current working directory |
 | `/ls [path]` | List directory contents |
+| `/status` | Show local Claude state plus current and recent visible TUI activity |
 | `/context` | Show context usage |
 | `/compact` | Compress the current conversation |
 | `/clear` | Start a brand-new session |
 | `/btw <question>` | Ask a side question without interrupting the main flow |
-| `/mode` | Switch permission mode (Auto → Accept edits → Plan → Manual) |
+| `/mode [auto|manual|edit|plan]` | Query or set the permission mode using the local Claude TUI |
 | `/stop` | Interrupt the current task |
 | `/sendimg <path>` | Send a local image from the bridge host to QQ |
 | `/sendfile <path>` | Send a local file from the bridge host to QQ |
+
+## What's new in v0.1.1
+
+- `/mode` now queries the current local TUI mode without changing it, while
+  `/mode auto|manual|edit|plan` switches directly to the requested mode and verifies
+  the result from the Claude TUI.
+- `/mode` and `/model` command matching no longer conflict.
+- `/status` reports the local Claude state and visible task progress without calling
+  the model or consuming tokens.
 
 ## Quick Start
 
@@ -99,7 +109,7 @@ Full documentation: <https://ai-bridge-qqrobot-claude.readthedocs.io/en/latest/>
 
 ## Version
 
-v0.1.0
+v0.1.1
 
 ## License
 

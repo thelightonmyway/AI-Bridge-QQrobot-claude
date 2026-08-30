@@ -383,22 +383,192 @@ _bot_openid: str = ""
 # 每个会话保存: id(session_id), jsonl_path, cwd(target_cwd), project(target_project)
 _resume_mapping: Dict[int, dict] = {}
 
-# === State: permission mode 状态机（bridge tracking）===
-# Claude Code Shift+Tab 循环顺序: Auto → Accept edits → Plan → Manual → Auto
-_MODE_CYCLE = ["Auto", "Accept edits", "Plan", "Manual"]
-_tracked_mode: str = "Auto"  # 初始值：启动命令 --permission-mode auto
+# === Permission mode：只以当前 TUI 底部状态为准 ===
+_MODE_MAX_STEPS = 6
+_MODE_TARGETS = {
+    "auto": "Auto",
+    "edit": "Accept edits",
+    "plan": "Plan",
+    "manual": "Manual",
+}
+_MODE_STATUS_PATTERNS = (
+    (re.compile(r"\bauto\s+mode\s+on\b", re.IGNORECASE), "Auto"),
+    (re.compile(r"\b(?:manual|default)\s+mode\s+on\b", re.IGNORECASE), "Manual"),
+    (re.compile(r"\baccept\s+edits?\s+on\b", re.IGNORECASE), "Accept edits"),
+    (re.compile(r"\bplan\s+mode\s+on\b", re.IGNORECASE), "Plan"),
+    (re.compile(r"\bdon['’]?t\s+ask\s+on\b", re.IGNORECASE), "dontAsk"),
+    (re.compile(r"\bbypass\s+permissions?\s+on\b", re.IGNORECASE), "bypassPermissions"),
+)
 
 
-def _try_read_mode_from_session() -> Optional[str]:
-    """尝试从 Claude Code session 文件读取 permissionMode。若无则返回 None。"""
-    if not _session_file or not _session_file.exists():
-        return None
-    try:
-        with open(_session_file) as f:
-            data = json.load(f)
-        return data.get("permissionMode")  # 未来版本可能有此字段
-    except Exception:
-        return None
+def _parse_permission_mode_from_pane(text: str) -> Optional[str]:
+    """从当前 tmux pane 底部的 Claude TUI 状态行识别权限模式。"""
+    footer = strip_ansi(text).replace(" ", " ")
+    for line in reversed(footer.splitlines()[-12:]):
+        normalized = " ".join(line.split())
+        for pattern, mode in _MODE_STATUS_PATTERNS:
+            if pattern.search(normalized):
+                return mode
+    return None
+
+
+_STATUS_WAIT_RE = re.compile(
+    r"requires?\s+(?:approval|confirmation)|permission\s+(?:prompt|required)|"
+    r"do you want to proceed|waiting for (?:user|approval|input)|"
+    r"enter to confirm|allow once|don['’]?t ask again",
+    re.IGNORECASE,
+)
+_STATUS_ACTIVE_RE = re.compile(
+    r"(?:working|thinking|running|reading|writing|searching|validating|processing|"
+    r"editing|computing|analyzing|analysing|generating)(?:\.{3}|…|\b)|"
+    r"esc to interrupt",
+    re.IGNORECASE,
+)
+_STATUS_SHELL_PROMPT_RE = re.compile(r"^(?:\([^)]*\)\s*)?\S+@\S+:[^$]*\$\s*")
+_STATUS_DECORATION_RE = re.compile(r"^[─━═│┃┆┊┌┐└┘├┤┬┴┼╭╮╰╯\s]+$")
+_STATUS_LEADING_UI_RE = re.compile(r"^[\s│┃┆┊└├●◉○✻✢✽·•⎿✔✓◻☒]+")
+_STATUS_ACTION_RE = re.compile(
+    r"^(?:read|opened|modified|updated|edited|created|wrote|added|removed|fixed|"
+    r"ran|running|validat|completed|finished|searched|found|checked|checking|"
+    r"inspect|analy|process|generat|bash\b|edit\(|write\(|grep\(|glob\(|"
+    r"unknown command)",
+    re.IGNORECASE,
+)
+_STATUS_SKIP_MARKERS = (
+    "context usage", "estimated usage by category", "free space:",
+    "autocompact", "auto-compact window", "new task? /clear to save",
+    "shift+tab to cycle", "ctrl+t to hide", "resume this session with:",
+    "security guide", "accessing workspace:", "quick safety check:",
+    "claude code'll be able to", "successfully loaded skill", "worked for ",
+)
+
+
+def _extract_status_progress(pane_text: str, limit: int = 5) -> list:
+    """Rule-filter meaningful visible TUI lines without summarizing them."""
+    visible = strip_ansi(pane_text).replace(" ", " ").splitlines()
+    result = []
+    skip_declined_block = False
+    for raw_line in visible:
+        stripped = raw_line.strip()
+        if "user declined to answer questions" in stripped.casefold():
+            skip_declined_block = True
+            continue
+        if skip_declined_block:
+            if not stripped:
+                skip_declined_block = False
+            continue
+        had_ui_marker = bool(re.match(r"^\s*[●◉○✻✢✽·•⎿✔✓◻☒]", raw_line))
+        raw = stripped
+        if not raw or _STATUS_DECORATION_RE.fullmatch(raw):
+            continue
+        if raw.startswith("❯") or _STATUS_SHELL_PROMPT_RE.match(raw):
+            continue
+        line = _STATUS_LEADING_UI_RE.sub("", raw).strip()
+        if not line:
+            continue
+        normalized = " ".join(line.split())
+        lower = normalized.casefold()
+        if any(marker in lower for marker in _STATUS_SKIP_MARKERS):
+            continue
+        if any(pattern.search(normalized) for pattern, _ in _MODE_STATUS_PATTERNS):
+            continue
+        if lower.startswith(("claude --resume ", "cd ", "skill(")):
+            continue
+        if re.match(r"^\d+\.\s+(?:yes|no|allow|deny)\b", normalized, re.IGNORECASE):
+            continue
+        if not (
+            had_ui_marker
+            or _STATUS_ACTION_RE.search(normalized)
+            or _STATUS_WAIT_RE.search(normalized)
+            or _STATUS_ACTIVE_RE.search(normalized)
+        ):
+            continue
+        if len(normalized) < 3:
+            continue
+        if normalized not in result:
+            result.append(normalized[:200])
+    return result[-limit:]
+
+
+def _classify_local_claude_state(session: Optional[dict], pane_text: str) -> str:
+    """Classify local Claude state from session fields and visible TUI only."""
+    waiting_for = (session or {}).get("waitingFor")
+    footer = "\n".join(pane_text.splitlines()[-24:])
+    if waiting_for or _STATUS_WAIT_RE.search(footer):
+        return "Waiting"
+    status = str((session or {}).get("status") or "").casefold()
+    if status in ("busy", "working", "running"):
+        return "Working"
+    if status in ("idle", "shell"):
+        return "Idle"
+    footer = "\n".join(pane_text.splitlines()[-12:])
+    if _STATUS_ACTIVE_RE.search(footer):
+        return "Working"
+    if "❯" in footer:
+        return "Idle"
+    return "Idle"
+
+
+def _waiting_current(progress: list, waiting_for) -> Optional[str]:
+    """Pick the most specific visible waiting reason without summarizing it."""
+    priorities = (
+        re.compile(r"requires?\s+(?:approval|confirmation)|permission\s+(?:prompt|required)", re.I),
+        re.compile(r"do you want to proceed|waiting for (?:user|approval|input)", re.I),
+        re.compile(r"allow once|don['’]?t ask again|enter to confirm", re.I),
+    )
+    for pattern in priorities:
+        for line in reversed(progress):
+            if pattern.search(line):
+                return line
+    return str(waiting_for) if waiting_for else None
+
+
+async def _build_local_status_text() -> str:
+    """Build /status entirely from local process, session, and tmux state."""
+    claude_running = _pane_has_claude()
+    project = _current_cwd
+    mode = None
+    session = None
+    pane_text = ""
+
+    if claude_running:
+        for pid in reversed(_pane_claude_pids()):
+            candidate = _session_data_for_pid(pid)
+            if candidate:
+                session = candidate
+                if candidate.get("cwd"):
+                    project = candidate["cwd"]
+                break
+        try:
+            pane_text = await _capture_pane()
+            mode = _parse_permission_mode_from_pane(pane_text)
+        except Exception as e:
+            logger.warning(f"[Status] capture-pane failed: {e}")
+
+    state = "Stopped" if not claude_running else _classify_local_claude_state(session, pane_text)
+    lines = [
+        "Bridge: Online",
+        f"Claude: {state}",
+        f"Project: {project}",
+        f"Mode: {mode or 'Unknown'}",
+    ]
+    if not claude_running:
+        return "\n".join(lines)
+
+    progress = _extract_status_progress(pane_text)
+    current = None
+    if state == "Waiting":
+        current = _waiting_current(progress, (session or {}).get("waitingFor"))
+    elif state == "Working" and progress:
+        current = progress[-1]
+
+    if current:
+        lines.extend(["", "Current:", current])
+    recent = [line for line in progress if line != current][-4:]
+    if recent:
+        lines.extend(["", "Recent:"])
+        lines.extend(f"- {line}" for line in recent)
+    return "\n".join(lines)
 
 
 # === State: 会话状态持久化 + 自动恢复限流 ===
@@ -2059,7 +2229,7 @@ def _save_master_openid(openid: str):
 
 async def handle_c2c_message(d: dict):
     """Handle C2C message from QQ user. Supports text + attachments (images/files)."""
-    global _last_msg_id, _bot_openid, _is_generating, _tracked_mode, _resume_mapping, _generating_since
+    global _last_msg_id, _bot_openid, _is_generating, _resume_mapping, _generating_since
     msg_id = str(d.get("id", ""))
     if not msg_id or is_duplicate(msg_id):
         return
@@ -2258,63 +2428,68 @@ async def handle_c2c_message(d: dict):
         await send_message_rest(user_openid, result)
         return
 
-    # --- A. /mode 和 /mode status（bridge 状态机）---
-    if lower.startswith("/mode"):
+    # --- A. /status（完全本地，不触发或恢复 Claude）---
+    if lower == "/status":
+        _is_generating = False
+        async with _cmd_lock:
+            status_text = await _build_local_status_text()
+        await send_message_rest(user_openid, status_text)
+        return
+
+    # --- A. /mode [auto|manual|edit|plan]（只以当前 TUI 状态为准）---
+    if lower == "/mode" or lower.startswith("/mode "):
         _is_generating = False
         parts = content.strip().split(None, 1)
+        arg = parts[1].strip().lower() if len(parts) == 2 else ""
 
-        # /mode status → 仅查询，不切换
-        if len(parts) == 2 and parts[1].strip().lower() == "status":
-            from_session = _try_read_mode_from_session()
-            if from_session:
-                await send_message_rest(user_openid, f"📌 当前权限模式: **{from_session}**（来源: Claude session）")
+        # 裸 /mode（以及兼容的 /mode status）只查询，绝不发送 Shift+Tab。
+        if not arg or arg == "status":
+            async with _cmd_lock:
+                current_mode = _parse_permission_mode_from_pane(await _capture_pane())
+            if current_mode:
+                await send_message_rest(user_openid, f"📌 当前权限模式: **{current_mode}**（来源: 当前 TUI）")
             else:
-                await send_message_rest(user_openid, f"📌 当前权限模式: **{_tracked_mode}**（来源: bridge tracking）\nClaude 启动参数: `--permission-mode auto`")
+                await send_message_rest(user_openid, "⚠️ 无法从当前 Claude TUI 底部识别权限模式")
             return
 
-        # /mode（无参数）→ 切换模式
-        logger.info(f"[Recv] /mode command (tracked={_tracked_mode})")
-        # 先尝试从 session 读取真实模式
-        from_session = _try_read_mode_from_session()
-        if from_session:
-            # 如果能读到真实模式，以此为基准切换
-            try:
-                cur_idx = _MODE_CYCLE.index(from_session)
-            except ValueError:
-                cur_idx = _MODE_CYCLE.index(_tracked_mode) if _tracked_mode in _MODE_CYCLE else 0
-            source = "Claude session"
-        else:
-            # 用 bridge 状态机
-            try:
-                cur_idx = _MODE_CYCLE.index(_tracked_mode)
-            except ValueError:
-                cur_idx = 0
-            source = "bridge tracking"
+        target_mode = _MODE_TARGETS.get(arg)
+        if not target_mode:
+            await send_message_rest(user_openid, "⚠️ 用法: /mode [auto|manual|edit|plan]")
+            return
 
-        next_idx = (cur_idx + 1) % len(_MODE_CYCLE)
-        next_mode = _MODE_CYCLE[next_idx]
-
-        # 发送 BTab 到 tmux
+        logger.info(f"[Recv] /mode {arg} -> target={target_mode}")
+        verified_mode = None
         async with _cmd_lock:
-            proc = await asyncio.create_subprocess_exec(
-                "tmux", "send-keys", "-t", f"{TMUX_SESSION}:", "BTab", ""
-            )
-            await proc.communicate()
-            await asyncio.sleep(1.0)
-            # 尝试 capture-pane 验证（best effort，不阻塞）
-            try:
-                captured = await capture_pane_stable(timeout=4.0)
-                for keyword in _MODE_CYCLE:
-                    if keyword in captured:
-                        next_mode = keyword
-                        source = "capture-pane"
+            current_mode = _parse_permission_mode_from_pane(await _capture_pane())
+            if current_mode == target_mode:
+                verified_mode = current_mode
+            else:
+                previous_mode = current_mode
+                for _ in range(_MODE_MAX_STEPS):
+                    await _tmux_send_key("BTab", pause=0.25)
+                    deadline = time.time() + 2.0
+                    detected_mode = None
+                    while time.time() < deadline:
+                        detected_mode = _parse_permission_mode_from_pane(await _capture_pane())
+                        if detected_mode and detected_mode != previous_mode:
+                            break
+                        await asyncio.sleep(0.15)
+                    if not detected_mode or detected_mode == previous_mode:
+                        logger.warning(
+                            f"[Mode] TUI mode transition not confirmed "
+                            f"(previous={previous_mode}, target={target_mode})"
+                        )
                         break
-            except Exception:
-                pass
+                    logger.info(f"[Mode] TUI confirmed: {previous_mode} -> {detected_mode}")
+                    previous_mode = detected_mode
+                    if detected_mode == target_mode:
+                        verified_mode = detected_mode
+                        break
 
-        _tracked_mode = next_mode
-        logger.info(f"[Mode] Switched to {next_mode} (source={source})")
-        await send_message_rest(user_openid, f"🔄 权限模式已切换: **{next_mode}**\n（来源: {source}）")
+        if verified_mode == target_mode:
+            await send_message_rest(user_openid, f"✅ 权限模式已确认: **{verified_mode}**（来源: 当前 TUI）")
+        else:
+            await send_message_rest(user_openid, f"❌ 未能从当前 TUI 确认目标权限模式: **{target_mode}**")
         return
 
     # --- B. /context（TUI 命令，capture-pane 解析）---
