@@ -12,6 +12,8 @@ Format conventions:
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-08-31
+
 ### Added
 
 - Long replies are no longer truncated: when a reply is too long for a normal
@@ -30,7 +32,6 @@ Format conventions:
 ### Fixed
 
 - Fixed command matching so `/mode` no longer captures `/model`.
-
 ## [0.1.0] - 2026-08-14
 
 First stable local release. This release turns the QQ Bridge from "runnable"
