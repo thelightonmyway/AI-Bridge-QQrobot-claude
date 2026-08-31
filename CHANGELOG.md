@@ -12,6 +12,8 @@ Format conventions:
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-08-31
+
 ### Added
 
 - Added `scripts/setup-codex.sh` to install or detect CLIProxyAPI, run Codex
@@ -33,7 +35,6 @@ Format conventions:
 ### Fixed
 
 - Fixed the README `/mode` command row so the Markdown table renders correctly.
-
 ## [0.1.1] - 2026-08-31
 
 ### Added

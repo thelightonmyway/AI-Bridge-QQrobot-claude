@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codex-qq-bridge"
-version = "0.1.1"
+version = "0.1.2"
 description = "Codex QQ Bridge - Connect OpenAI Codex CLI to QQ instant messaging"
 readme = "README.md"
 license = {text = "MIT"}

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "claude-code-qq-bridge"
-version = "0.1.1"
+version = "0.1.2"
 description = "Claude Code QQ Bridge - Connect Claude Code CLI to QQ instant messaging"
 readme = "README.md"
 license = {text = "MIT"}
