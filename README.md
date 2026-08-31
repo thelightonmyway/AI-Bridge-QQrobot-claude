@@ -35,19 +35,21 @@ the original author for sharing their work.
 | `/compact` | Compress the current conversation |
 | `/clear` | Start a brand-new session |
 | `/btw <question>` | Ask a side question without interrupting the main flow |
-| `/mode [auto|manual|edit|plan]` | Query or set the permission mode using the local Claude TUI |
+| `/mode [mode]` | Query current mode or switch to auto/manual/edit/plan |
 | `/stop` | Interrupt the current task |
 | `/sendimg <path>` | Send a local image from the bridge host to QQ |
 | `/sendfile <path>` | Send a local file from the bridge host to QQ |
 
-## What's new in v0.1.1
+## What's new in v0.1.2
 
-- `/mode` now queries the current local TUI mode without changing it, while
-  `/mode auto|manual|edit|plan` switches directly to the requested mode and verifies
-  the result from the Claude TUI.
-- `/mode` and `/model` command matching no longer conflict.
-- `/status` reports the local Claude state and visible task progress without calling
-  the model or consuming tokens.
+- Added `scripts/setup-codex.sh` for an isolated Claude Code → CLIProxyAPI →
+  Codex OAuth setup using `gpt-5.6-sol`, including explicit proxy configuration,
+  local model verification, and safe backups of both Claude settings files.
+- Added opt-in CLIProxyAPI startup and status support for Codex users; the
+  existing bridge lifecycle remains unchanged for everyone else.
+- Added Codex setup documentation and temporary-HOME regression tests, including
+  the known compatibility limitation for some built-in Claude Code subagents.
+- Fixed the `/mode` command row so Markdown renderers no longer split its table cell.
 
 ## Quick Start
 
@@ -67,6 +69,19 @@ Run it with no arguments to get a `.env` template you fill in by hand. Then star
 ```
 
 Send your bot a plain message from QQ — you will get a reply from Claude.
+
+### Optional: Codex / GPT-5.6 Sol
+
+To configure a fresh machine so Claude Code uses Codex OAuth through a local
+CLIProxyAPI instance, run:
+
+```bash
+./scripts/setup-codex.sh
+```
+
+The installer backs up your Claude settings, configures an explicit outbound
+proxy, verifies `gpt-5.6-sol`, and enables opt-in CLIProxyAPI startup checks for
+the bridge. See [docs/codex.md](docs/codex.md) for details and rollback steps.
 
 ## Updating
 
@@ -109,7 +124,7 @@ Full documentation: <https://ai-bridge-qqrobot-claude.readthedocs.io/en/latest/>
 
 ## Version
 
-v0.1.1
+v0.1.2
 
 ## License
 

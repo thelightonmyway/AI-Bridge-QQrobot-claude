@@ -12,6 +12,28 @@ Format conventions:
 
 ## [Unreleased]
 
+### Added
+
+- Added `scripts/setup-codex.sh` to install or detect CLIProxyAPI, run Codex
+  device OAuth, discover the local host and port, configure an explicit
+  `proxy-url`, and verify `gpt-5.6-sol`.
+- The Codex installer generates a local API key and safely backs up and updates
+  both `~/.claude.json` and `~/.claude/settings.json`, removing conflicting old
+  DeepSeek/Kimi model selectors while preserving unrelated settings.
+- Added `docs/codex.md` and isolated temporary-HOME tests covering setup,
+  upstream release installation, OAuth, model verification, and idempotence.
+
+### Changed
+
+- `start.sh` now provides opt-in CLIProxyAPI startup and status checks after a
+  successful Codex setup; non-Codex users retain the original behavior.
+- Documented the known compatibility limitation where some built-in Claude Code
+  subagents, including Explore, may request a Claude model on a Codex-only backend.
+
+### Fixed
+
+- Fixed the README `/mode` command row so the Markdown table renders correctly.
+
 ## [0.1.1] - 2026-08-31
 
 ### Added
