@@ -40,16 +40,19 @@ the original author for sharing their work.
 | `/sendimg <path>` | Send a local image from the bridge host to QQ |
 | `/sendfile <path>` | Send a local file from the bridge host to QQ |
 
-## What's new in v0.1.2
+## What's new in v0.1.3
 
-- Added `scripts/setup-codex.sh` for an isolated Claude Code → CLIProxyAPI →
-  Codex OAuth setup using `gpt-5.6-sol`, including explicit proxy configuration,
-  local model verification, and safe backups of both Claude settings files.
-- Added opt-in CLIProxyAPI startup and status support for Codex users; the
-  existing bridge lifecycle remains unchanged for everyone else.
-- Added Codex setup documentation and temporary-HOME regression tests, including
-  the known compatibility limitation for some built-in Claude Code subagents.
-- Fixed the `/mode` command row so Markdown renderers no longer split its table cell.
+This is a bug fix release:
+
+- Fixed Claude project slug conversion for `_` and other non-ASCII-alphanumeric
+  path characters, so `/resume` can find the correct project directory.
+- Fixed Claude startup for paths containing spaces or Unicode by quoting the
+  working directory and `script -c` command with `shlex.quote()`.
+- Unified `/cd` path handling for `~`, relative paths, and absolute paths.
+- Removed unreliable cwd inference from project slugs; `/resume` now trusts only
+  valid `cwd` values recorded in session JSONL files.
+- Added regression coverage for path conversion, path resolution, safe launch
+  commands, and JSONL cwd handling.
 
 ## Quick Start
 
@@ -124,7 +127,7 @@ Full documentation: <https://ai-bridge-qqrobot-claude.readthedocs.io/en/latest/>
 
 ## Version
 
-v0.1.2
+v0.1.3
 
 ## License
 

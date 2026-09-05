@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agy-qq-bridge"
-version = "0.1.2"
+version = "0.1.3"
 description = "Google AGY QQ Bridge - Connect AGY CLI to QQ instant messaging"
 readme = "README.md"
 license = {text = "MIT"}

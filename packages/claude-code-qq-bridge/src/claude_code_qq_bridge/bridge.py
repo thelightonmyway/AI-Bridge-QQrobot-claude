@@ -22,6 +22,7 @@ import asyncio
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -72,7 +73,23 @@ TMUX_SESSION = os.environ.get("TMUX_SESSION", "1")
 def path_to_claude_project(path: str) -> str:
     """将文件系统路径转为 Claude Code 项目名。例如 /home/alice → -home-alice"""
     abspath = str(Path(path).resolve())
-    return "-" + abspath.lstrip("/").replace("/", "-")
+    return "-" + "".join(
+        char if (char.isascii() and (char.isalnum() or char == "-")) else "-"
+        for char in abspath.lstrip("/")
+    )
+
+
+def resolve_path_from_cwd(path: str, cwd: str) -> Path:
+    """按 Claude 当前目录解析用户路径，并展开 ~ 后规范化。"""
+    target = Path(path).expanduser()
+    if not target.is_absolute():
+        target = Path(cwd) / target
+    return target.resolve()
+
+
+def build_claude_launch_command(work_dir: str, claude_cmd: str) -> str:
+    """Quote both the working directory and Claude command for the shell."""
+    return f"cd {shlex.quote(work_dir)} && script -q -c {shlex.quote(claude_cmd)} /dev/null"
 
 
 CLAUDE_HOME = str(Path.home() / ".claude")
@@ -1010,15 +1027,6 @@ def extract_cwd_from_jsonl(jsonl_path: str) -> Optional[str]:
     return None
 
 
-def project_name_to_cwd(project_name: str) -> Optional[str]:
-    """项目名反向推导 cwd（如 -mnt-e-Antarctic -> /mnt/e/Antarctic）。
-    仅当推导出的目录真实存在时返回，否则 None（只作 JSONL 不可用时的兜底）。"""
-    if not project_name.startswith("-"):
-        return None
-    candidate = "/" + project_name[1:].replace("-", "/")
-    return candidate if os.path.isdir(candidate) else None
-
-
 def list_recent_sessions(limit: int = 10) -> list:
     """扫描 _current_project 目录，提取最近 N 个会话的摘要。
     返回列表，每个元素: {id, time, title, mtime, size, tokens, is_current}"""
@@ -1065,7 +1073,7 @@ def list_recent_sessions(limit: int = 10) -> list:
             "id": sid,
             "jsonl_path": str(jf),
             "project": project_dir.name,
-            "cwd": extract_cwd_from_jsonl(str(jf)) or project_name_to_cwd(project_dir.name),
+            "cwd": extract_cwd_from_jsonl(str(jf)),
             "time": mtime_str,
             "title": title,
             "mtime": mtime,
@@ -1359,7 +1367,7 @@ async def restart_claude_in_tmux(cwd: Optional[str] = None, resume_session_id: O
         claude_cmd += f" --resume {resume_session_id}"
     proc = await asyncio.create_subprocess_exec(
         "tmux", "send-keys", "-t", f"{TMUX_SESSION}:",
-        f"cd {work_dir} && script -q -c '{claude_cmd}' /dev/null", "Enter"
+        build_claude_launch_command(work_dir, claude_cmd), "Enter"
     )
     await proc.communicate()
 
@@ -2301,14 +2309,8 @@ async def handle_c2c_message(d: dict):
             logger.info(f"[Recv] /resume {idx} -> session_id={sid}")
             # Look up the target JSONL path before restarting so we can log it
             target_jsonl = entry.get("jsonl_path") or find_jsonl_path(sid)
-            # 真实 target_cwd：优先从目标 JSONL 读取（会话启动时记录），
-            # 其次用列表时已提取的值，最后尝试从项目名反向推导。
-            # 禁止回退到 HOME / bridge 启动目录 —— 解析不到就中止恢复。
-            target_cwd = (
-                (extract_cwd_from_jsonl(target_jsonl) if target_jsonl else None)
-                or entry.get("cwd")
-                or (project_name_to_cwd(Path(target_jsonl).parent.name) if target_jsonl else None)
-            )
+            # 真实 target_cwd 只从目标 JSONL 读取；项目 slug 不可逆，解析不到就中止恢复。
+            target_cwd = extract_cwd_from_jsonl(target_jsonl) if target_jsonl else None
             logger.info(
                 f"[Resume] target session_id={sid}\n"
                 f"[Resume] target jsonl={target_jsonl}\n"
@@ -2377,7 +2379,7 @@ async def handle_c2c_message(d: dict):
         if not target_path:
             await send_message_rest(user_openid, "⚠️ 用法: /cd <路径>\n例如: /cd /mnt/e/my-project")
             return
-        target = Path(target_path)
+        target = resolve_path_from_cwd(target_path, _current_cwd)
         if not target.exists():
             await send_message_rest(user_openid, f"⚠️ 目录不存在: {target_path}")
             return
@@ -2663,10 +2665,7 @@ async def handle_c2c_message(d: dict):
         arg = content.strip()[3:].strip()  # everything after "/ls"
         if arg:
             # 相对路径以当前工作目录为基准，避免被当成项目根目录解析
-            target = Path(arg).expanduser()
-            if not target.is_absolute():
-                target = Path(_current_cwd) / target
-            target = target.resolve()
+            target = resolve_path_from_cwd(arg, _current_cwd)
         else:
             target = Path(_current_cwd)
         if not target.exists():

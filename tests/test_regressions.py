@@ -129,6 +129,105 @@ def test_msg_seq_is_monotonic_not_random():
     assert bridge._next_msg_seq("msg-b") == 1
 
 
+# ───────────────────────── Claude 项目路径命名 ─────────────────────────
+
+@pytest.mark.parametrize("path,expected", [
+    ("/mnt/e/wind_global", "-mnt-e-wind-global"),
+    ("/mnt/e/Antarctic", "-mnt-e-Antarctic"),
+    (
+        "/home/xuyang/South wind/分区域/kmeans/new2026/test/claude",
+        "-home-xuyang-South-wind-----kmeans-new2026-test-claude",
+    ),
+])
+def test_path_to_claude_project_matches_claude_naming(path, expected):
+    """Claude 项目目录名把非 ASCII 字母数字和连字符的字符逐个替换为 '-'。"""
+    from claude_code_qq_bridge import bridge
+
+    assert bridge.path_to_claude_project(path) == expected
+
+
+def test_path_to_claude_project_does_not_collapse_separators():
+    """连续的路径分隔符、空格和中文字符必须各保留一个替换后的 '-'。"""
+    from claude_code_qq_bridge import bridge
+
+    assert bridge.path_to_claude_project("/tmp/a b/中文/c") == "-tmp-a-b----c"
+
+
+def test_cd_path_resolution_matches_ls(tmp_path, monkeypatch):
+    """/cd 支持 ~、相对当前目录和规范化绝对路径。"""
+    from claude_code_qq_bridge import bridge
+
+    home = tmp_path / "home"
+    current = tmp_path / "current"
+    home.mkdir()
+    current.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+
+    assert bridge.resolve_path_from_cwd("~/xxx", str(current)) == (home / "xxx").resolve()
+    assert bridge.resolve_path_from_cwd("relative_dir", str(current)) == (current / "relative_dir").resolve()
+    absolute = tmp_path / "absolute_dir"
+    assert bridge.resolve_path_from_cwd(str(absolute), str(current)) == absolute.resolve()
+
+
+def test_restart_command_quotes_workdir_and_claude_command():
+    """启动命令必须安全引用带空格和 Unicode 的目录及 Claude 参数。"""
+    import shlex
+
+    from claude_code_qq_bridge import bridge
+
+    cases = [
+        "/home/xuyang/code/South wind/test",
+        "/home/xuyang/code/PVanalysis/新的definition",
+    ]
+    for work_dir in cases:
+        claude_cmd = "claude --permission-mode auto --resume session id"
+        expected = f"cd {shlex.quote(work_dir)} && script -q -c {shlex.quote(claude_cmd)} /dev/null"
+        assert bridge.build_claude_launch_command(work_dir, claude_cmd) == expected
+
+    source = BRIDGE_PY.read_text(encoding="utf-8")
+    restart_body = source.split("async def restart_claude_in_tmux", 1)[1]
+    assert "build_claude_launch_command(work_dir, claude_cmd)" in restart_body
+
+
+def test_recent_session_without_jsonl_cwd_does_not_guess_from_slug(tmp_path, monkeypatch):
+    """JSONL 没有 cwd 时，列表和恢复数据都必须保持未知而非反推路径。"""
+    from claude_code_qq_bridge import bridge
+
+    projects = tmp_path / "projects" / "-mnt-e-wind-global"
+    projects.mkdir(parents=True)
+    (projects / "session.jsonl").write_text(
+        json.dumps({"type": "user", "message": {"content": "old session"}}) + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(bridge, "CLAUDE_HOME", str(tmp_path))
+    monkeypatch.setattr(bridge, "_current_project", "-mnt-e-wind-global")
+
+    sessions = bridge.list_recent_sessions()
+    assert len(sessions) == 1
+    assert sessions[0]["cwd"] is None
+    assert "project_name_to_cwd" not in BRIDGE_PY.read_text(encoding="utf-8")
+
+
+def test_recent_session_uses_jsonl_cwd_as_authority(tmp_path, monkeypatch):
+    """正常会话恢复数据直接使用 JSONL 记录的 cwd。"""
+    from claude_code_qq_bridge import bridge
+
+    projects = tmp_path / "projects" / "-mnt-e-wind-global"
+    projects.mkdir(parents=True)
+    session_cwd = tmp_path / "real cwd with spaces"
+    session_cwd.mkdir()
+    (projects / "session.jsonl").write_text(
+        json.dumps({"cwd": str(session_cwd), "type": "user", "message": {"content": "old session"}})
+        + "\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(bridge, "CLAUDE_HOME", str(tmp_path))
+    monkeypatch.setattr(bridge, "_current_project", "-mnt-e-wind-global")
+
+    sessions = bridge.list_recent_sessions()
+    assert sessions[0]["cwd"] == str(session_cwd)
+
+
 # ───────────────────────── .env 路径一致性 ─────────────────────────
 
 @pytest.mark.parametrize("pkg,mod", [

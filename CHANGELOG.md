@@ -12,6 +12,25 @@ Format conventions:
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-08-31
+
+Bug fix release.
+
+### Fixed
+
+- Fixed Claude project slug conversion for `_` and other non-ASCII-alphanumeric
+  path characters so `/resume` can locate the correct project directory.
+- Fixed Claude startup for paths containing spaces or Unicode by safely quoting
+  the working directory and `script -c` command with `shlex.quote()`.
+- Unified `/cd` path resolution for `~`, relative paths, and absolute paths.
+- Removed unreliable cwd inference from project slugs; `/resume` now trusts only
+  valid `cwd` values recorded in session JSONL files.
+
+### Added
+
+- Added regression coverage for project slugs, path resolution, launch command
+  quoting, and JSONL cwd handling.
+
 ## [0.1.2] - 2026-08-31
 
 ### Added
