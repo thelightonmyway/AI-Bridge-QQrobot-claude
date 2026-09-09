@@ -23,6 +23,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -92,7 +93,25 @@ def build_claude_launch_command(work_dir: str, claude_cmd: str) -> str:
     return f"cd {shlex.quote(work_dir)} && script -q -c {shlex.quote(claude_cmd)} /dev/null"
 
 
+def normalize_cwd(cwd: str) -> Optional[str]:
+    """Return a normalized absolute cwd for comparisons without requiring it to exist."""
+    if not isinstance(cwd, str) or not cwd:
+        return None
+    try:
+        return str(Path(cwd).expanduser().resolve())
+    except (OSError, RuntimeError):
+        return None
+
+
+def cwd_matches(left: Optional[str], right: Optional[str]) -> bool:
+    """Compare cwd values as normalized absolute paths."""
+    normalized_left = normalize_cwd(left) if left else None
+    normalized_right = normalize_cwd(right) if right else None
+    return bool(normalized_left and normalized_right and normalized_left == normalized_right)
+
+
 CLAUDE_HOME = str(Path.home() / ".claude")
+CLAUDE_SESSION_BACKUP_DIR = Path.home() / ".claude-session-backup"
 CLAUDE_PROJECT = path_to_claude_project(str(Path.home()))
 
 
@@ -689,12 +708,19 @@ def _session_data_for_pid(pid) -> Optional[dict]:
         return None
 
 
-def _find_pane_claude_by_session(sid: str) -> Optional[int]:
-    """在 bridge 自己的 pane 中，找 sessionId==sid 且存活的 claude PID。"""
+def _find_pane_claude_by_session(sid: str, expected_cwd: Optional[str] = None) -> Optional[int]:
+    """在 bridge 自己的 pane 中找指定 sid，并可严格匹配 session cwd。"""
     for pid in _pane_claude_pids():
         data = _session_data_for_pid(pid)
-        if data and data.get("sessionId") == sid:
-            return pid
+        if not data or data.get("sessionId") != sid:
+            continue
+        if expected_cwd and not cwd_matches(data.get("cwd"), expected_cwd):
+            logger.warning(
+                f"[bind] sid={sid} pid={pid} cwd={data.get('cwd')} "
+                f"does not match expected_cwd={expected_cwd}"
+            )
+            continue
+        return pid
     return None
 
 
@@ -706,19 +732,33 @@ def _apply_binding(sid: Optional[str], pid: Optional[int], log_path: Optional[st
     _pid = pid
     _log_path = log_path
     _session_file = Path(CLAUDE_HOME) / "sessions" / f"{pid}.json" if pid else None
+    bound_data = _session_data_for_pid(pid) if pid else None
+    bound_cwd = bound_data.get("cwd") if bound_data else None
+    if bound_cwd:
+        _current_cwd = bound_cwd
     if log_path:
         _jsonl_watermark = _count_jsonl_lines(log_path)
-        actual_project = Path(log_path).parent.name
+        jsonl_project = Path(log_path).parent.name
+        expected_project = path_to_claude_project(bound_cwd) if bound_cwd else jsonl_project
+        if jsonl_project != expected_project:
+            logger.warning(
+                f"[session-discovery] project mismatch sid={sid}, "
+                f"jsonl_project={jsonl_project}, cwd={bound_cwd}, "
+                f"expected_project={expected_project}"
+            )
+        actual_project = expected_project
         if actual_project != CLAUDE_PROJECT:
             logger.info(f"[bind] CLAUDE_PROJECT: {CLAUDE_PROJECT} -> {actual_project}")
             CLAUDE_PROJECT = actual_project
         if actual_project != _current_project:
             logger.info(f"[bind] _current_project: {_current_project} -> {actual_project}")
             _current_project = actual_project
-    if pid:
-        data = _session_data_for_pid(pid)
-        if data and data.get("cwd"):
-            _current_cwd = data["cwd"]
+    elif bound_cwd:
+        actual_project = path_to_claude_project(bound_cwd)
+        if actual_project != CLAUDE_PROJECT:
+            CLAUDE_PROJECT = actual_project
+        if actual_project != _current_project:
+            _current_project = actual_project
     logger.info(
         f"[bind] sid={sid}, pid={pid}, jsonl={log_path}, "
         f"project={CLAUDE_PROJECT}, cwd={_current_cwd}, watermark={_jsonl_watermark}"
@@ -805,6 +845,20 @@ def _is_workspace_trust_prompt(text: str) -> bool:
     )
 
 
+def _workspace_trust_selection(text: str) -> Optional[str]:
+    """返回 workspace trust prompt 当前由 ``❯`` 选中的选项。"""
+    for raw_line in strip_ansi(text).splitlines():
+        line = " ".join(raw_line.strip().casefold().split())
+        if not line.startswith("❯"):
+            continue
+        option = line[1:].strip()
+        if "yes, i trust this folder" in option:
+            return "yes"
+        if "no, exit" in option:
+            return "no"
+    return None
+
+
 def _is_legacy_trust_prompt(text: str) -> bool:
     """旧式 trust prompt：'trust'/'信任' + '?'/'y/n'/'yes/no'。"""
     return ("trust" in text or "信任" in text) and (
@@ -815,65 +869,125 @@ def _is_legacy_trust_prompt(text: str) -> bool:
 async def _accept_trust_prompt_if_present(checks: int = 8, interval: float = 1.0) -> bool:
     """若出现 Claude 信任提示则自动确认，无提示则跳过（避免把按键打进输入框）。
 
-    - workspace 提示（'Accessing workspace' + 'Yes, I trust this folder' + 'Enter to confirm'）：
-      选项 1 已默认选中 → 发送 Enter 确认。
+    - workspace 提示必须读取当前 ``❯`` 选项：Yes 直接 Enter；No 先 Down，
+      重新确认 Yes 已选中后再 Enter；无法确认选项时不发送按键。
     - 旧式提示（'?'/'y/n'）：发送 '1' + Enter。
     返回是否确实发送了确认键。"""
     for _ in range(checks):
         try:
-            captured = (await _capture_pane()).lower()
-            if _is_workspace_trust_prompt(captured):
-                await _send_tmux_keys(["Enter"])
-                logger.info("[launch] workspace trust prompt accepted (Enter)")
-                return True
-            if _is_legacy_trust_prompt(captured):
+            captured = await _capture_pane()
+            lowered = captured.casefold()
+            if _is_workspace_trust_prompt(lowered):
+                selection = _workspace_trust_selection(captured)
+                logger.info(f"[launch] workspace trust prompt detected (selected={selection or 'unknown'})")
+                if selection == "yes":
+                    await _send_tmux_keys(["Enter"])
+                    logger.info("[launch] workspace trust prompt accepted (Enter)")
+                    return True
+                if selection == "no":
+                    await _send_tmux_keys(["Down"])
+                    for _ in range(5):
+                        confirmed = await _capture_pane()
+                        if _workspace_trust_selection(confirmed) == "yes":
+                            await _send_tmux_keys(["Enter"])
+                            logger.info("[launch] workspace trust prompt accepted (Down + Enter)")
+                            return True
+                        await asyncio.sleep(0.1)
+                    logger.warning("[launch] workspace trust prompt selection not confirmed after Down")
+                else:
+                    logger.warning("[launch] workspace trust prompt selection unknown; no key sent")
+            elif _is_legacy_trust_prompt(lowered):
                 await _send_tmux_keys(["1", "Enter"])
                 logger.info("[launch] legacy trust prompt accepted ('1' + Enter)")
                 return True
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"[launch] trust prompt check failed: {e}")
         await asyncio.sleep(interval)
     return False
 
 
-async def _wait_for_resumed_binding(sid: str, timeout: float = 30.0) -> bool:
-    """轮询等待恢复会话的 claude PID 出现在 pane 并完成绑定。
-    - Claude 刚启动时 session 文件可能尚未生成，允许合理时间重试；
-    - 等待期间若出现 trust prompt（claude 停在 'Accessing workspace'），自动跨过，
-      而不是干等到超时误报启动失败。"""
+async def _wait_for_resumed_binding(
+    sid: str,
+    expected_cwd: Optional[str] = None,
+    expected_jsonl_path: Optional[str] = None,
+    timeout: float = 30.0,
+) -> bool:
+    """轮询等待指定 sid 且 cwd 匹配的 claude PID 完成绑定。
+
+    恢复时同时校验 session metadata cwd 和目标 JSONL cwd，避免把另一个
+    pane 内的旧 session 当成恢复成功。"""
+    def matching_log_path() -> Optional[str]:
+        log_path = expected_jsonl_path or find_jsonl_path(sid)
+        if not log_path or Path(log_path).stem != sid or not Path(log_path).is_file():
+            return None
+        jsonl_cwd = extract_cwd_from_jsonl(log_path)
+        if expected_cwd and not cwd_matches(jsonl_cwd, expected_cwd):
+            logger.warning(
+                f"[Resume] JSONL cwd mismatch sid={sid}, cwd={jsonl_cwd}, "
+                f"expected_cwd={expected_cwd}, jsonl={log_path}"
+            )
+            return None
+        return log_path
+
     deadline = time.time() + timeout
     while time.time() < deadline:
         await _accept_trust_prompt_if_present(checks=1, interval=0.1)
-        pid = _find_pane_claude_by_session(sid)
-        log_path = find_jsonl_path(sid)
+        pid = _find_pane_claude_by_session(sid, expected_cwd)
+        log_path = matching_log_path()
         if pid and _is_alive(pid) and log_path:
             _apply_binding(sid, pid, log_path)
             return True
         await asyncio.sleep(1.5)
     # 最后再试一次
     await _accept_trust_prompt_if_present(checks=1, interval=0.1)
-    pid = _find_pane_claude_by_session(sid)
-    log_path = find_jsonl_path(sid)
+    pid = _find_pane_claude_by_session(sid, expected_cwd)
+    log_path = matching_log_path()
     if pid and _is_alive(pid) and log_path:
         _apply_binding(sid, pid, log_path)
         return True
-    logger.error(f"[Resume] timeout: no live claude PID bound for session {sid}")
+    logger.error(f"[Resume] timeout: no matching live claude PID bound for session {sid}")
     return False
 
 
-async def _wait_for_any_binding(timeout: float = 30.0) -> bool:
-    """全新启动：轮询直到 pane 中出现带 session 文件的 claude 并绑定。
-    等待期间同样自动跨过可能出现的 trust prompt。"""
+async def _wait_for_any_binding(
+    expected_cwd: Optional[str] = None,
+    timeout: float = 30.0,
+) -> bool:
+    """全新启动：轮询直到 pane 中出现 cwd 匹配的 Claude 并绑定。"""
     deadline = time.time() + timeout
     while time.time() < deadline:
         await _accept_trust_prompt_if_present(checks=1, interval=0.1)
-        sid, pid = find_current_session()
+        sid, pid = find_current_session(expected_cwd)
         if sid and pid and _is_alive(pid):
-            _apply_binding(sid, pid, find_jsonl_path(sid))
+            log_path = find_jsonl_path(sid)
+            if log_path:
+                jsonl_cwd = extract_cwd_from_jsonl(log_path)
+                if expected_cwd and jsonl_cwd and not cwd_matches(jsonl_cwd, expected_cwd):
+                    logger.warning(
+                        f"[launch] JSONL cwd mismatch sid={sid}, cwd={jsonl_cwd}, "
+                        f"expected_cwd={expected_cwd}, jsonl={log_path}"
+                    )
+                    await asyncio.sleep(1.5)
+                    continue
+            _apply_binding(sid, pid, log_path)
             return True
         await asyncio.sleep(1.5)
-    logger.error("[launch] timeout: no claude bound in pane")
+    logger.error("[launch] timeout: no matching claude bound in pane")
     return False
+
+
+def _resume_binding_matches(sid: str, expected_cwd: str, jsonl_path: str) -> bool:
+    """Verify that a successful resume bound exactly the requested session/cwd."""
+    if _claude_session_id != sid or not _pid or not _is_alive(_pid):
+        return False
+    data = _session_data_for_pid(_pid)
+    bound_cwd = data.get("cwd") if data else None
+    jsonl_cwd = extract_cwd_from_jsonl(jsonl_path)
+    return (
+        cwd_matches(bound_cwd, expected_cwd)
+        and cwd_matches(jsonl_cwd, expected_cwd)
+        and _log_path == jsonl_path
+    )
 
 
 # === 死亡检测 + 自动恢复 ===
@@ -1027,93 +1141,209 @@ def extract_cwd_from_jsonl(jsonl_path: str) -> Optional[str]:
     return None
 
 
-def list_recent_sessions(limit: int = 10) -> list:
-    """扫描 _current_project 目录，提取最近 N 个会话的摘要。
-    返回列表，每个元素: {id, time, title, mtime, size, tokens, is_current}"""
-    project_dir = Path(CLAUDE_HOME) / "projects" / _current_project
-    if not project_dir.exists():
-        return []
-    sessions = []
-    for jf in sorted(project_dir.glob("*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True):
-        sid = jf.stem
-        mtime = jf.stat().st_mtime
-        mtime_str = time.strftime("%m-%d %H:%M", time.localtime(mtime))
-        file_size = jf.stat().st_size
-        # 提取第一条用户消息作为标题
-        title = "(空会话)"
+def _top_level_session_files():
+    """Yield only ``projects/*/*.jsonl`` files, never nested subagent data."""
+    projects_dir = Path(CLAUDE_HOME) / "projects"
+    if not projects_dir.exists():
+        return
+    for project_dir in sorted(projects_dir.iterdir(), key=lambda path: path.name):
+        if not project_dir.is_dir():
+            continue
+        for jf in sorted(project_dir.glob("*.jsonl"), key=lambda path: path.name):
+            if jf.is_file():
+                yield jf
+
+
+def _copy_session_file_if_changed(source: Path, destination: Path, stats: dict) -> None:
+    """Copy one session file when size or mtime changed; never mutate source."""
+    try:
+        source_stat = source.stat()
         try:
-            with open(jf, "r", encoding="utf-8", errors="replace") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        obj = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if obj.get("type") == "user":
-                        msg = obj.get("message", {})
-                        content = msg.get("content", "")
-                        if isinstance(content, list):
-                            texts = []
-                            for block in content:
-                                if isinstance(block, dict) and block.get("type") == "text":
-                                    t = block.get("text", "").strip()
-                                    if t:
-                                        texts.append(t)
-                            content = " ".join(texts)
-                        if isinstance(content, str) and content.strip():
-                            title = content.strip()[:80]
-                            break
-        except Exception:
-            pass
-        tokens_str = _estimate_tokens_from_jsonl(jf)
-        is_current = (sid == _claude_session_id) if _claude_session_id else False
-        sessions.append({
-            "id": sid,
-            "jsonl_path": str(jf),
-            "project": project_dir.name,
-            "cwd": extract_cwd_from_jsonl(str(jf)),
-            "time": mtime_str,
-            "title": title,
-            "mtime": mtime,
-            "size": _format_size(file_size),
-            "tokens": tokens_str,
-            "is_current": is_current,
-        })
-        if len(sessions) >= limit:
-            break
-    return sessions
+            destination_stat = destination.stat()
+        except FileNotFoundError:
+            destination_stat = None
+        if (
+            destination_stat
+            and destination_stat.st_size == source_stat.st_size
+            and destination_stat.st_mtime_ns == source_stat.st_mtime_ns
+        ):
+            stats["skipped"] += 1
+            return
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        stats["copied"] += 1
+    except Exception as exc:
+        stats["errors"] += 1
+        logger.warning(
+            f"[session-backup] copy failed source={source} destination={destination}: {exc}"
+        )
+
+
+def backup_claude_sessions() -> dict:
+    """Incrementally copy top-level Claude sessions and history to a stable backup."""
+    stats = {"copied": 0, "skipped": 0, "errors": 0}
+    try:
+        CLAUDE_SESSION_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:
+        stats["errors"] += 1
+        logger.warning(f"[session-backup] backup directory unavailable: {exc}")
+        return stats
+
+    projects_dir = Path(CLAUDE_HOME) / "projects"
+    if not projects_dir.exists():
+        logger.warning(f"[session-backup] source projects directory missing: {projects_dir}")
+    else:
+        for source in _top_level_session_files():
+            destination = CLAUDE_SESSION_BACKUP_DIR / "projects" / source.parent.name / source.name
+            _copy_session_file_if_changed(source, destination, stats)
+
+    history_source = Path(CLAUDE_HOME) / "history.jsonl"
+    if history_source.is_file():
+        _copy_session_file_if_changed(
+            history_source,
+            CLAUDE_SESSION_BACKUP_DIR / "history.jsonl",
+            stats,
+        )
+    else:
+        logger.warning(f"[session-backup] history file missing: {history_source}")
+    return stats
+
+
+async def _run_session_backup(trigger: str) -> dict:
+    """Run one backup off the event loop and log only non-sensitive statistics."""
+    stats = await asyncio.to_thread(backup_claude_sessions)
+    logger.info(
+        f"[session-backup] trigger={trigger}, copied={stats['copied']}, "
+        f"skipped={stats['skipped']}, errors={stats['errors']}"
+    )
+    return stats
+
+
+def _session_title_from_jsonl(jf: Path) -> str:
+    """Extract the first user text as a short, non-authoritative title."""
+    try:
+        with open(jf, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if obj.get("type") != "user":
+                    continue
+                msg = obj.get("message", {})
+                content = msg.get("content", "") if isinstance(msg, dict) else ""
+                if isinstance(content, list):
+                    texts = [
+                        block.get("text", "").strip()
+                        for block in content
+                        if isinstance(block, dict) and block.get("type") == "text"
+                    ]
+                    content = " ".join(text for text in texts if text)
+                if isinstance(content, str) and content.strip():
+                    return content.strip()[:80]
+    except Exception:
+        pass
+    return "(空会话)"
+
+
+def _session_summary(jf: Path) -> dict:
+    """Build one read-only summary for a top-level session JSONL."""
+    sid = jf.stem
+    mtime = jf.stat().st_mtime
+    cwd = extract_cwd_from_jsonl(str(jf))
+    project = jf.parent.name
+    expected_project = path_to_claude_project(cwd) if cwd else None
+    if cwd and expected_project != project:
+        logger.warning(
+            f"[session-discovery] project mismatch sid={sid}, "
+            f"jsonl_project={project}, cwd={cwd}, expected_project={expected_project}"
+        )
+    return {
+        "id": sid,
+        "session_id": sid,
+        "jsonl_path": str(jf),
+        "project": project,
+        "cwd": cwd,
+        "time": time.strftime("%m-%d %H:%M", time.localtime(mtime)),
+        "title": _session_title_from_jsonl(jf),
+        "mtime": mtime,
+        "size": _format_size(jf.stat().st_size),
+        "tokens": _estimate_tokens_from_jsonl(jf),
+        "is_current": (sid == _claude_session_id) if _claude_session_id else False,
+    }
+
+
+def _dedupe_session_summaries(sessions: list) -> list:
+    """Deduplicate session IDs, preferring readable cwd data then newer files."""
+    selected = {}
+    for session in sorted(
+        sessions,
+        key=lambda item: (item.get("cwd") is not None, item.get("mtime", 0)),
+        reverse=True,
+    ):
+        selected.setdefault(session["id"], session)
+    return sorted(selected.values(), key=lambda item: item.get("mtime", 0), reverse=True)
+
+
+def discover_all_sessions(limit: Optional[int] = None) -> list:
+    """Discover all recent top-level Claude sessions across project directories."""
+    sessions = [_session_summary(jf) for jf in _top_level_session_files()]
+    sessions = _dedupe_session_summaries(sessions)
+    return sessions if limit is None else sessions[:limit]
+
+
+def discover_sessions_for_cwd(cwd: str, limit: int = 10) -> list:
+    """Discover sessions whose JSONL-recorded cwd matches ``cwd``."""
+    normalized = normalize_cwd(cwd)
+    if not normalized:
+        return []
+    sessions = [
+        session for session in discover_all_sessions()
+        if cwd_matches(session.get("cwd"), normalized)
+    ]
+    return sessions[:limit]
+
+
+def list_recent_sessions(limit: int = 10) -> list:
+    """Scan all project directories and return sessions belonging to current cwd."""
+    return discover_sessions_for_cwd(_current_cwd, limit)
 
 
 def find_jsonl_path(session_id: str) -> Optional[str]:
-    """Given a session_id, search all ``~/.claude/projects/*/<session_id>.jsonl``
-    to find the actual JSONL file on disk. Returns the path or None."""
-    projects_dir = Path(CLAUDE_HOME) / "projects"
-    if not projects_dir.exists():
+    """Find the preferred top-level JSONL for a session ID across projects."""
+    candidates = [
+        jf for jf in _top_level_session_files() if jf.stem == session_id
+    ]
+    if not candidates:
+        logger.warning(
+            f"[find_jsonl_path] session_id={session_id} NOT FOUND in any project "
+            f"under {Path(CLAUDE_HOME) / 'projects'}"
+        )
         return None
-    for project_dir in sorted(projects_dir.iterdir()):
-        if not project_dir.is_dir():
-            continue
-        candidate = project_dir / f"{session_id}.jsonl"
-        if candidate.exists():
-            logger.info(
-                f"[find_jsonl_path] session_id={session_id} -> {candidate} "
-                f"(project={project_dir.name})"
-            )
-            return str(candidate)
-    logger.warning(
-        f"[find_jsonl_path] session_id={session_id} NOT FOUND in any project "
-        f"under {projects_dir}"
+    candidates.sort(
+        key=lambda jf: (
+            extract_cwd_from_jsonl(str(jf)) is not None,
+            jf.stat().st_mtime,
+        ),
+        reverse=True,
     )
-    return None
+    candidate = candidates[0]
+    logger.info(
+        f"[find_jsonl_path] session_id={session_id} -> {candidate} "
+        f"(project={candidate.parent.name})"
+    )
+    return str(candidate)
 
 
-def find_current_session():
+def find_current_session(expected_cwd: Optional[str] = None):
     """在 bridge 自己的 tmux pane 内查找当前交互式 Claude 会话。
 
     只考虑 pane 进程树里的 claude 进程（并核对 session 文件）。
     绝不绑定 pane 外的 Claude（避免误接管/误操作用户其他终端里的会话）。
+    ``expected_cwd`` 给定时，只返回 session metadata cwd 匹配的进程。
 
     Returns (session_id, pid) or (None, None) on failure.
     The JSONL path is resolved separately via find_jsonl_path()."""
@@ -1131,6 +1361,12 @@ def find_current_session():
         if not data:
             continue
         if data.get("kind") != "interactive" or data.get("entrypoint") not in ("cli", "sdk-ts"):
+            continue
+        if expected_cwd and not cwd_matches(data.get("cwd"), expected_cwd):
+            logger.info(
+                f"[find_session] skip pid={pid}: cwd={data.get('cwd')} "
+                f"does not match expected_cwd={expected_cwd}"
+            )
             continue
         sid = data.get("sessionId")
         if not sid:
@@ -1295,13 +1531,15 @@ async def start_claude_in_tmux():
         # claude 可能正停在 workspace trust prompt（有进程但还没有 session 文件）：
         # 先跨过 prompt，再等 session 文件出现并绑定；实在绑定不了才走重启。
         await _accept_trust_prompt_if_present(checks=5, interval=1.0)
-        if await _wait_for_any_binding(timeout=20):
+        if await _wait_for_any_binding(expected_cwd=_current_cwd, timeout=20):
             return
-        sid, pid = find_current_session()
+        # Do not fall back to binding an arbitrary pane Claude: if its
+        # metadata cwd differs, it belongs to another project/session.
+        sid, pid = find_current_session(expected_cwd=_current_cwd)
         if pid and sid:
             _apply_binding(sid, pid, find_jsonl_path(sid))
             return
-        logger.warning("[startup] claude present but no session bound; will restart")
+        logger.warning("[startup] claude present but no matching session bound; will restart")
 
     # pane 无 claude → 启动（优先恢复上次会话）
     state = _load_state()
@@ -1325,7 +1563,11 @@ async def stop_claude_in_tmux():
         logger.info("Sent Ctrl+C to Claude (claude exited; will auto-recover on next message)")
 
 
-async def restart_claude_in_tmux(cwd: Optional[str] = None, resume_session_id: Optional[str] = None):
+async def restart_claude_in_tmux(
+    cwd: Optional[str] = None,
+    resume_session_id: Optional[str] = None,
+    resume_jsonl_path: Optional[str] = None,
+):
     """彻底重启 bridge 自己 pane 内的 Claude，并等待绑定成功。
 
     - 先停掉 pane 内现有 Claude（C-c + 兜底 SIGTERM，只操作自己的 pane）；
@@ -1348,11 +1590,10 @@ async def restart_claude_in_tmux(cwd: Optional[str] = None, resume_session_id: O
     if not os.path.isdir(work_dir):
         logger.warning(f"[restart] cwd {work_dir} does not exist, falling back to HOME")
         work_dir = str(Path.home())
+    # Do not publish the requested cwd/project until the new Claude is bound.
+    # A failed /cd or /resume must leave the previous state and mapping usable.
     if cwd:
-        _current_cwd = work_dir
-        _current_project = path_to_claude_project(work_dir)
-        CLAUDE_PROJECT = _current_project
-        logger.info(f"[Project] cwd={_current_cwd}\n[Project] project={_current_project}")
+        logger.info(f"[restart] launch_cwd={work_dir} (state update deferred until bind)")
     if resume_session_id:
         logger.info(f"[Resume] launch_cwd={work_dir}")
 
@@ -1371,20 +1612,36 @@ async def restart_claude_in_tmux(cwd: Optional[str] = None, resume_session_id: O
     )
     await proc.communicate()
 
-    # 2. 等待 claude 进程出现并接受信任提示（仅在确认 claude 在 pane 内时发 '1'）
+    # 2. 等待 claude 进程出现并接受信任提示（仅在确认 claude 在 pane 内时发按键）
+    process_seen = False
+    trust_prompt_seen = False
     deadline = time.time() + 20
     while time.time() < deadline and not _pane_has_claude():
         await asyncio.sleep(1.0)
     if _pane_has_claude():
+        process_seen = True
+        try:
+            initial_pane = await _capture_pane()
+            trust_prompt_seen = (
+                _is_workspace_trust_prompt(initial_pane.casefold())
+                or _is_legacy_trust_prompt(initial_pane.casefold())
+            )
+        except Exception as e:
+            logger.debug(f"[restart] initial pane capture failed: {e}")
         await _accept_trust_prompt_if_present()
     else:
         logger.error("[restart] claude process did not appear in pane within 20s")
 
     # 3. 轮询绑定（Claude 刚启动时 session 文件可能尚未生成，允许重试）
     if resume_session_id:
-        ok = await _wait_for_resumed_binding(resume_session_id, timeout=30)
+        ok = await _wait_for_resumed_binding(
+            resume_session_id,
+            expected_cwd=work_dir,
+            expected_jsonl_path=resume_jsonl_path,
+            timeout=30,
+        )
     else:
-        ok = await _wait_for_any_binding(timeout=30)
+        ok = await _wait_for_any_binding(expected_cwd=work_dir, timeout=30)
 
     if ok:
         logger.info(
@@ -1392,8 +1649,31 @@ async def restart_claude_in_tmux(cwd: Optional[str] = None, resume_session_id: O
             f"project={CLAUDE_PROJECT})"
         )
         return True, f"sid={_claude_session_id}, pid={_pid}"
-    logger.error("[restart] Claude launch FAILED — no live claude bound in pane")
-    return False, "claude did not start in the pane"
+
+    # Keep failure diagnostics local and bounded: enough to tell process absence
+    # from a binding failure, without dumping environment variables or secrets.
+    try:
+        final_pane = await _capture_pane()
+    except Exception as e:
+        final_pane = f"<capture failed: {e}>"
+    final_lower = final_pane.casefold()
+    trust_prompt_seen = trust_prompt_seen or (
+        _is_workspace_trust_prompt(final_lower)
+        or _is_legacy_trust_prompt(final_lower)
+    )
+    pane_pids = sorted(_tmux_pane_pids())
+    pane_claude_pids = _pane_claude_pids()
+    process_seen = process_seen or bool(pane_claude_pids)
+    pane_tail = "\\n".join(final_pane.splitlines()[-12:]) or "<empty>"
+    logger.error(
+        f"[restart] launch FAILED: process_seen={process_seen}, "
+        f"binding_succeeded={ok}, trust_prompt_detected={trust_prompt_seen}, "
+        f"pane_pids={pane_pids}, pane_claude_pids={pane_claude_pids}, "
+        f"pane_tail={pane_tail!r}"
+    )
+    if process_seen:
+        return False, "claude process appeared but binding failed"
+    return False, "claude process did not appear in the pane"
 
 
 async def get_tmux_pane_cwd() -> Optional[str]:
@@ -2284,6 +2564,20 @@ async def handle_c2c_message(d: dict):
     # ═══════════════════════════════════════════════════════════
     lower = content.strip().lower()
 
+    # --- A. /session-backup（仅复制本地文件，不经过 Claude）---
+    if lower == "/session-backup":
+        _is_generating = False
+        stats = await _run_session_backup("command")
+        await send_message_rest(
+            user_openid,
+            "✅ Session backup complete\n"
+            f"Copied: {stats['copied']}\n"
+            f"Skipped: {stats['skipped']}\n"
+            f"Errors: {stats['errors']}\n"
+            "Backup: ~/.claude-session-backup",
+        )
+        return
+
     # --- A. /stop（bridge 自己处理，不需要锁）---
     if lower in ["/stop", "/tingzhi", "/kill"]:
         _is_generating = False
@@ -2298,6 +2592,28 @@ async def handle_c2c_message(d: dict):
         raw = content.strip()
         parts = raw.split(None, 1)
 
+        # /resume all → rescue view across every top-level project directory.
+        if len(parts) == 2 and parts[1].strip().casefold() == "all":
+            logger.info("[Resume] listing all top-level sessions")
+            sessions = await asyncio.to_thread(discover_all_sessions)
+            if not sessions:
+                await send_message_rest(user_openid, "📭 没有发现历史会话。")
+                return
+            _resume_mapping.clear()
+            lines = ["**📋 全部历史会话（救援视图）**\n"]
+            for i, session in enumerate(sessions, 1):
+                _resume_mapping[i] = session
+                cur = " 🟢*当前*" if session["is_current"] else ""
+                cwd = session["cwd"] or "(unknown cwd)"
+                lines.append(f"[{i}] `{session['time']}` [{session['size']} | {session['tokens']}]{cur}")
+                lines.append(f"    cwd: {cwd}")
+                lines.append(f"    project: {session['project']}")
+                lines.append(f"    sid: {session['id'][:8]}...")
+                lines.append(f"    {session['title'][:100]}")
+            lines.append("\n回复 `/resume N` 恢复会话（如 `/resume 1`）")
+            await send_message_rest(user_openid, "\n".join(lines))
+            return
+
         # /resume N → 恢复指定会话（需要锁）
         if len(parts) == 2 and parts[1].strip().isdigit():
             idx = int(parts[1].strip())
@@ -2305,19 +2621,31 @@ async def handle_c2c_message(d: dict):
             if not entry:
                 await send_message_rest(user_openid, "⚠️ 未找到对应会话，请先发送 /resume 查看列表")
                 return
-            sid = entry.get("id")
-            logger.info(f"[Recv] /resume {idx} -> session_id={sid}")
-            # Look up the target JSONL path before restarting so we can log it
-            target_jsonl = entry.get("jsonl_path") or find_jsonl_path(sid)
-            # 真实 target_cwd 只从目标 JSONL 读取；项目 slug 不可逆，解析不到就中止恢复。
-            target_cwd = extract_cwd_from_jsonl(target_jsonl) if target_jsonl else None
+            sid = entry.get("session_id") or entry.get("id")
+            target_jsonl = entry.get("jsonl_path")
+            target_cwd = entry.get("cwd")
             logger.info(
-                f"[Resume] target session_id={sid}\n"
+                f"[Recv] /resume {idx} -> session_id={sid}\n"
                 f"[Resume] target jsonl={target_jsonl}\n"
                 f"[Resume] target_cwd={target_cwd}\n"
+                f"[Resume] target project={entry.get('project')}\n"
                 f"[Resume] current project={_current_project}"
             )
-            if not target_cwd or not os.path.isdir(target_cwd):
+            actual_jsonl_cwd = extract_cwd_from_jsonl(target_jsonl) if target_jsonl else None
+            if (
+                not sid
+                or not target_jsonl
+                or not Path(target_jsonl).is_file()
+                or not target_cwd
+                or not actual_jsonl_cwd
+                or not cwd_matches(actual_jsonl_cwd, target_cwd)
+                or not os.path.isdir(target_cwd)
+            ):
+                logger.error(
+                    f"[Resume] ABORT: selected session metadata is invalid "
+                    f"(sid={sid}, jsonl={target_jsonl}, mapped_cwd={target_cwd}, "
+                    f"jsonl_cwd={actual_jsonl_cwd})"
+                )
                 logger.error(
                     f"[Resume] ABORT: cannot resolve valid target_cwd for session "
                     f"{sid} (jsonl={target_jsonl})"
@@ -2329,15 +2657,33 @@ async def handle_c2c_message(d: dict):
                 return
             await send_message_rest(user_openid, f"⏳ 正在恢复会话 {idx}...")
             async with _cmd_lock:
-                ok, info = await restart_claude_in_tmux(cwd=target_cwd, resume_session_id=sid)
+                ok, info = await restart_claude_in_tmux(
+                    cwd=target_cwd,
+                    resume_session_id=sid,
+                    resume_jsonl_path=target_jsonl,
+                )
             if not ok:
                 logger.error(f"[Resume] FAILED to restore session {sid}: {info}")
                 await send_message_rest(
                     user_openid,
                     f"❌ 恢复会话 {idx} 失败：{info}。\nClaude 未能启动，请稍后重试或发送 /resume 查看列表。",
                 )
-                _resume_mapping.clear()
+                # Keep _resume_mapping intact so the user can retry the same index.
                 return
+            if not _resume_binding_matches(sid, target_cwd, target_jsonl):
+                logger.error(
+                    f"[Resume] FAILED strict binding validation for sid={sid}, "
+                    f"cwd={target_cwd}, jsonl={target_jsonl}; "
+                    f"bound_sid={_claude_session_id}, bound_pid={_pid}, bound_jsonl={_log_path}"
+                )
+                await send_message_rest(
+                    user_openid,
+                    f"❌ 恢复会话 {idx} 失败：启动后 session/cwd 校验不一致。\n"
+                    "Claude 未能安全绑定，请稍后重试或发送 /resume 查看列表。",
+                )
+                # Keep _resume_mapping intact so the user can retry the same index.
+                return
+            await _run_session_backup("resume")
             # 绑定成功后 refresh_session 已更新 _current_cwd、_current_project、
             # _log_path、watermark —— 这里只做核对与日志
             tmux_cwd = await get_tmux_pane_cwd()
@@ -2354,21 +2700,21 @@ async def handle_c2c_message(d: dict):
             _resume_mapping.clear()
             return
 
-        # 裸 /resume → 非阻塞列出会话（不持锁，不影响 Claude）
-        logger.info(f"[Resume] listing project={_current_project}, cwd={_current_cwd}")
+        # 裸 /resume → 按 JSONL cwd 聚合当前目录的会话（不持锁）
+        logger.info(f"[Resume] listing cwd={_current_cwd}, project={_current_project}")
         sessions = await asyncio.to_thread(list_recent_sessions, 10)
         if not sessions:
-            await send_message_rest(user_openid, f"📭 当前项目（{_current_project}）没有历史会话。")
+            await send_message_rest(user_openid, f"📭 当前目录（{_current_cwd}）没有历史会话。")
             return
         _resume_mapping.clear()
-        lines = [f"**📋 历史会话（{_current_project}）**\n"]
+        lines = [f"**📋 历史会话（{_current_cwd}）**\n"]
         for i, s in enumerate(sessions, 1):
-            # 保存全量信息: session_id / jsonl_path / target_cwd / target_project
             _resume_mapping[i] = s
             cur = " 🟢*当前*" if s["is_current"] else ""
             lines.append(f"[{i}] `{s['time']}` [{s['size']} | {s['tokens']}]{cur}")
             lines.append(f"    {s['title'][:100]}")
-        lines.append(f"\n回复 `/resume N` 恢复会话（如 `/resume 1`）")
+            lines.append(f"    project: {s['project']} | sid: {s['id'][:8]}...")
+        lines.append("\n回复 `/resume N` 恢复会话（如 `/resume 1`），或 `/resume all` 查看全部")
         await send_message_rest(user_openid, "\n".join(lines))
         return
 
@@ -2396,6 +2742,7 @@ async def handle_c2c_message(d: dict):
                 f"❌ 切换到 {target_path} 失败：{info}",
             )
             return
+        await _run_session_backup("cd")
         logger.info(
             f"[Project] after /cd: cwd={_current_cwd}, project={_current_project}, "
             f"jsonl={_log_path}, watermark={_jsonl_watermark}"
@@ -2586,6 +2933,7 @@ async def handle_c2c_message(d: dict):
         if not ok:
             await send_message_rest(user_openid, f"❌ 新会话启动失败：{info}")
             return
+        await _run_session_backup("clear")
         if _claude_session_id:
             await send_message_rest(user_openid, f"✅ 新会话已启动\nID: `{_claude_session_id[:8]}...`\n项目: {CLAUDE_PROJECT}")
         else:
@@ -2905,6 +3253,8 @@ async def main():
                 "Bridge started but no live Claude session could be bound. "
                 "Will auto-recover on next QQ message."
             )
+
+    await _run_session_backup("startup")
 
     # 2. Start background polling
     asyncio.create_task(periodic_poll())

@@ -28,6 +28,8 @@ the original author for sharing their work.
 |---|---|
 | `/cd <path>` | Change Claude's working directory |
 | `/resume` | List recent sessions; `/resume N` restores session N |
+| `/resume all` | Rescue-list all top-level Claude sessions across projects |
+| `/session-backup` | Copy Claude session JSONL and history to the local backup |
 | `/pwd` | Show the current working directory |
 | `/ls [path]` | List directory contents |
 | `/status` | Show local Claude state plus current and recent visible TUI activity |
@@ -40,19 +42,17 @@ the original author for sharing their work.
 | `/sendimg <path>` | Send a local image from the bridge host to QQ |
 | `/sendfile <path>` | Send a local file from the bridge host to QQ |
 
-## What's new in v0.1.3
+## What's new in v0.1.4
 
-This is a bug fix release:
+This is a bug-fix release focused on reliable project switching and session recovery:
 
-- Fixed Claude project slug conversion for `_` and other non-ASCII-alphanumeric
-  path characters, so `/resume` can find the correct project directory.
-- Fixed Claude startup for paths containing spaces or Unicode by quoting the
-  working directory and `script -c` command with `shlex.quote()`.
-- Unified `/cd` path handling for `~`, relative paths, and absolute paths.
-- Removed unreliable cwd inference from project slugs; `/resume` now trusts only
-  valid `cwd` values recorded in session JSONL files.
-- Added regression coverage for path conversion, path resolution, safe launch
-  commands, and JSONL cwd handling.
+- Fixed `/cd` reporting success while Claude was still attached to another
+  project's session, and now verify that Claude starts in the requested directory.
+- Fixed Bot-created sessions being saved under the wrong Claude project, so they
+  remain visible in native Claude `/resume` and `/resume all`.
+- Improved `/resume` so it selects the intended Claude session more reliably.
+- Added automatic Claude session backups and the local `/session-backup` command
+  as an extra recovery safeguard.
 
 ## Quick Start
 

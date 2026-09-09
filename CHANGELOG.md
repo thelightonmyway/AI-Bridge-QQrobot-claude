@@ -12,6 +12,24 @@ Format conventions:
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-09-09
+
+Bug-fix release focused on reliable project switching and session recovery.
+
+### Fixed
+
+- Fixed `/cd` sometimes reporting success even though Claude was still attached to a session from a different working directory.
+- `/cd` now confirms that Claude really started in the requested directory before reporting success.
+- Prevented the Bridge from accidentally reusing an old Claude session from another project.
+- Fixed Bot-created sessions sometimes being saved under the wrong Claude project, which made them disappear from native Claude `/resume` and `/resume all`.
+- Improved session restore reliability so `/resume` selects the intended Claude session.
+
+### Added
+
+- Added `/resume all` for viewing sessions across projects.
+- Added automatic Claude session backups and the local `/session-backup` command.
+- Added regression tests covering project switching, session binding, resume behavior, and session backup.
+
 ## [0.1.3] - 2026-08-31
 
 Bug fix release.
