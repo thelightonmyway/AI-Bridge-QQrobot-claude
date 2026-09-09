@@ -127,7 +127,7 @@ Full documentation: <https://ai-bridge-qqrobot-claude.readthedocs.io/en/latest/>
 
 ## Version
 
-v0.1.3
+v0.1.4
 
 ## License
 
